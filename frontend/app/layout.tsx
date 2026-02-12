@@ -1,15 +1,18 @@
 import type { Metadata } from "next";
+import { Inter } from "next/font/google";
 import "./globals.css";
 
+const inter = Inter({ subsets: ["latin"] });
+
 export const metadata: Metadata = {
-  title: "AI Video Trimmer",
-  description: "Demo app for AI-assisted video trimming"
+  title: "AI Video Editor",
+  description: "AI-assisted video editing with natural language"
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <body>{children}</body>
+    <html lang="en" className="dark" suppressHydrationWarning>
+      <body className={inter.className} suppressHydrationWarning>{children}</body>
     </html>
   );
 }

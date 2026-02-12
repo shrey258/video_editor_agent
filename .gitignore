@@ -19,3 +19,4 @@ media/outputs
 
 # OS
 .DS_Store
+*.tsbuildinfo
