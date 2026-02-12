@@ -1,0 +1,21 @@
+# Node
+frontend/node_modules
+frontend/.next
+
+# Python
+backend/.venv
+**/__pycache__/
+*.py[cod]
+backend/.pytest_cache
+
+# Env
+.env
+backend/.env
+frontend/.env.local
+
+# Media outputs
+media/uploads
+media/outputs
+
+# OS
+.DS_Store

@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 50 38% 96%;
+  --foreground: 30 16% 14%;
+  --card: 0 0% 100%;
+  --card-foreground: 30 16% 14%;
+  --primary: 172 68% 33%;
+  --primary-foreground: 0 0% 100%;
+  --border: 44 20% 82%;
+  --muted: 50 30% 92%;
+  --muted-foreground: 30 12% 35%;
+  --radius: 0.75rem;
+}
+
+body {
+  @apply bg-background text-foreground;
+  background-image: radial-gradient(circle at 90% 5%, #d8f2ec 0%, transparent 35%);
+}
+
+video {
+  width: 100%;
+  border-radius: 0.75rem;
+  background: #101010;
+}

@@ -1,0 +1,54 @@
+# Video Editor Agent v0
+
+Demo-ready AI-assisted video trimming:
+
+- Frontend: Next.js + TypeScript + Tailwind + shadcn/ui
+- Backend: FastAPI + Gemini intent parsing + FFmpeg execution
+- Storage: local files only (`media/uploads`, `media/outputs`)
+
+## Project structure
+
+- `frontend/` Next.js web app
+- `backend/` FastAPI API server
+- `media/` uploaded and processed files
+
+## Prerequisites
+
+- Node.js 20+
+- Python 3.11+
+- `ffmpeg` and `ffprobe` installed and available in PATH
+
+## Backend setup
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# Set GEMINI_API_KEY in backend/.env (optional if using fallback parser)
+uvicorn app.main:app --reload --port 8000
+```
+
+## Frontend setup
+
+```bash
+cd frontend
+npm install
+cp .env.example .env.local
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000).
+
+## API endpoints
+
+- `GET /health`
+- `POST /upload` (`multipart/form-data`, field `file`)
+- `POST /edit-request` (`{ "video_id": "...", "prompt": "trim from 00:12 to 00:47" }`)
+
+## Notes
+
+- v0 supports one action: `trim_video`
+- Session state is in-memory, resets when backend restarts
+- This is intentionally lean for demo/showcase use
