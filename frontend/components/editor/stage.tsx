@@ -41,10 +41,10 @@ export function Stage() {
     return (
         <div className="relative flex flex-1 flex-col items-center justify-center overflow-hidden bg-zinc-950/50 p-4">
             {/* Video Preview Area */}
-            <div className="relative flex w-full max-w-[360px] flex-1 items-center justify-center">
+            <div className="relative flex w-full max-w-4xl flex-1 items-center justify-center">
                 {hasVideo ? (
-                    /* 9:16 video container */
-                    <div className="relative aspect-[9/16] w-full max-h-full overflow-hidden rounded-lg bg-black shadow-2xl shadow-black/50">
+                    /* 16:9 video container */
+                    <div className="relative aspect-video w-full max-h-full overflow-hidden rounded-lg bg-black shadow-2xl shadow-black/50">
                         <div className="absolute inset-0 flex items-center justify-center">
                             <Film className="h-16 w-16 text-zinc-700" />
                         </div>
@@ -53,7 +53,7 @@ export function Stage() {
                     /* Upload prompt */
                     <button
                         onClick={() => setHasVideo(true)}
-                        className="group relative flex aspect-[9/16] w-full max-h-full cursor-pointer flex-col items-center justify-center gap-4 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/50 transition-colors duration-200 hover:border-primary/50 hover:bg-zinc-900"
+                        className="group relative flex aspect-video w-full max-h-full cursor-pointer flex-col items-center justify-center gap-4 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/50 transition-colors duration-200 hover:border-primary/50 hover:bg-zinc-900"
                     >
                         <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-zinc-800 transition-colors duration-200 group-hover:bg-primary/20">
                             <Upload className="h-7 w-7 text-zinc-400 transition-colors duration-200 group-hover:text-primary" />
