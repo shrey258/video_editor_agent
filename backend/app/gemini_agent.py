@@ -23,8 +23,10 @@ def _regex_fallback(prompt: str) -> dict:
     if not m:
         raise ValueError("Could not parse prompt without Gemini API key.")
     start_raw, end_raw = m.groups()
+    operation = "extract_range" if "keep only" in lowered else "remove_segment"
     return {
         "action": "trim_video",
+        "operation": operation,
         "start_sec": parse_time_like(start_raw),
         "end_sec": parse_time_like(end_raw),
         "reason": "Parsed from explicit range in prompt.",
@@ -42,8 +44,10 @@ async def parse_intent(prompt: str, duration_sec: float) -> dict:
     )
     instructions = (
         "Return JSON only with this schema: "
-        '{"action":"trim_video","start_sec":number,"end_sec":number,"reason":string}. '
-        f"Times must be within 0 and {duration_sec:.3f}."
+        '{"action":"trim_video","operation":"remove_segment|extract_range","start_sec":number,"end_sec":number,"reason":string}. '
+        f"Times must be within 0 and {duration_sec:.3f}. "
+        "Interpretation rules: if user says trim/cut/delete/remove from X to Y, set operation=remove_segment. "
+        "If user says keep only/highlight/extract from X to Y, set operation=extract_range."
     )
     payload = {
         "contents": [{"parts": [{"text": f"{instructions}\nUser prompt: {prompt}"}]}],
@@ -58,6 +62,7 @@ async def parse_intent(prompt: str, duration_sec: float) -> dict:
     parsed = _extract_json(text)
     return {
         "action": parsed.get("action", "trim_video"),
+        "operation": parsed.get("operation", "remove_segment"),
         "start_sec": parse_time_like(parsed["start_sec"]),
         "end_sec": parse_time_like(parsed["end_sec"]),
         "reason": parsed.get("reason", "Parsed by Gemini."),

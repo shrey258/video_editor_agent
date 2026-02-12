@@ -49,6 +49,8 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Notes
 
-- v0 supports one action: `trim_video`
+- v0 supports one action: `trim_video` with two operations:
+  - `remove_segment` (default for "trim/cut from X to Y"): removes X-Y and stitches remaining video
+  - `extract_range` (for "keep only X to Y"): outputs only X-Y clip
 - Session state is in-memory, resets when backend restarts
 - This is intentionally lean for demo/showcase use

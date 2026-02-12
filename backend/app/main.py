@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from .gemini_agent import parse_intent
 from .schemas import EditRequest, EditResponse, UploadResponse
 from .validators import validate_trim
-from .video_tools import get_duration_sec, trim_video
+from .video_tools import extract_range, get_duration_sec, remove_segment_and_stitch
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT / ".env")
@@ -89,15 +89,29 @@ async def edit_request(payload: EditRequest) -> EditResponse:
         intent = await parse_intent(payload.prompt, duration)
         if intent["action"] != "trim_video":
             raise ValueError("Only trim_video is supported in v0.")
+        operation = intent.get("operation", "remove_segment")
+        if operation not in {"remove_segment", "extract_range"}:
+            raise ValueError(f"Unsupported trim operation: {operation}")
         start_sec = float(intent["start_sec"])
         end_sec = float(intent["end_sec"])
         validate_trim(start_sec, end_sec, duration)
-        output_path = trim_video(
-            input_path=Path(session["input_path"]),
-            output_dir=OUTPUT_DIR,
-            start_sec=start_sec,
-            end_sec=end_sec,
-        )
+        if operation == "remove_segment":
+            # Removing the full duration would produce an empty file.
+            if start_sec <= 0 and end_sec >= duration:
+                raise ValueError("Cannot remove the entire video range.")
+            output_path = remove_segment_and_stitch(
+                input_path=Path(session["input_path"]),
+                output_dir=OUTPUT_DIR,
+                start_sec=start_sec,
+                end_sec=end_sec,
+            )
+        else:
+            output_path = extract_range(
+                input_path=Path(session["input_path"]),
+                output_dir=OUTPUT_DIR,
+                start_sec=start_sec,
+                end_sec=end_sec,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except HTTPException:
@@ -107,6 +121,7 @@ async def edit_request(payload: EditRequest) -> EditResponse:
 
     return EditResponse(
         action="trim_video",
+        operation=operation,
         reason=intent.get("reason", "Applied trim."),
         output={
             "start_sec": start_sec,

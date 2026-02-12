@@ -22,5 +22,6 @@ class EditOutput(BaseModel):
 
 class EditResponse(BaseModel):
     action: str
+    operation: str
     reason: str
     output: EditOutput
