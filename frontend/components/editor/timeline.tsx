@@ -335,27 +335,6 @@ export function Timeline() {
                                 </div>
                             )}
                         </div>
-
-                        {/* Bottom action hints */}
-                        <div className="absolute bottom-2 right-6 flex items-center gap-2">
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                className="h-6 gap-1.5 border-zinc-700 bg-zinc-900 text-[11px] text-zinc-400 hover:text-zinc-200"
-                                onClick={(e) => { e.stopPropagation(); handleZoomIn(); }}
-                            >
-                                <ZoomIn className="h-3 w-3" />
-                                Zoom
-                            </Button>
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                className="h-6 gap-1.5 border-zinc-700 bg-zinc-900 text-[11px] text-zinc-400 hover:text-zinc-200"
-                            >
-                                <Scissors className="h-3 w-3" />
-                                Trim
-                            </Button>
-                        </div>
                     </div>
                 </div>
             </div>
