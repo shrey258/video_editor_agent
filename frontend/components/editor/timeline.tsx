@@ -95,6 +95,7 @@ export function Timeline() {
     } = useVideo();
 
     const [zoom, setZoom] = useState(1);
+    const [isAddSegmentMenuOpen, setIsAddSegmentMenuOpen] = useState(false);
     const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
     const [isDraggingTrimStart, setIsDraggingTrimStart] = useState(false);
     const [isDraggingTrimEnd, setIsDraggingTrimEnd] = useState(false);
@@ -200,6 +201,11 @@ export function Timeline() {
     }
 
     function handleToolbarAction(label: string) {
+        if (label === "Add segment") {
+            setIsAddSegmentMenuOpen(!isAddSegmentMenuOpen);
+            return;
+        }
+
         switch (label) {
             case "Zoom in":
                 handleZoomIn();
@@ -221,16 +227,36 @@ export function Timeline() {
                 {/* Toolbar */}
                 <div className="flex items-center gap-1 border-b border-zinc-800/60 px-3 py-1.5">
                     {TOOLBAR_ITEMS.map((item, i) => (
-                        <span key={item.label} className="contents">
+                        <div key={item.label} className="relative flex items-center">
                             {i === 5 && (
                                 <Separator orientation="vertical" className="mx-1 h-5 bg-zinc-800" />
                             )}
+
+                            {/* Detailed "Add segment" popover menu */}
+                            {item.label === "Add segment" && isAddSegmentMenuOpen && (
+                                <div className="absolute bottom-full left-0 mb-2 z-50 min-w-[140px] flex flex-col gap-1 rounded-lg border border-zinc-800 bg-zinc-950 p-1 shadow-xl animate-in fade-in slide-in-from-bottom-2 duration-200">
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-9 w-full justify-start gap-2 px-2 text-zinc-100 hover:bg-zinc-800 hover:text-white"
+                                        onClick={() => {
+                                            // Placeholder for Trim action
+                                            console.log("Trim clicked");
+                                            setIsAddSegmentMenuOpen(false);
+                                        }}
+                                    >
+                                        <Scissors className="h-4 w-4 text-zinc-400" />
+                                        <span>Trim</span>
+                                    </Button>
+                                </div>
+                            )}
+
                             <Tooltip>
                                 <TooltipTrigger asChild>
                                     <Button
                                         variant="ghost"
                                         size="icon"
-                                        className="h-7 w-7 text-zinc-400 hover:text-zinc-200"
+                                        className={`h-7 w-7 text-zinc-400 hover:text-zinc-200 ${item.label === "Add segment" && isAddSegmentMenuOpen ? "bg-zinc-800 text-zinc-100" : ""}`}
                                         onClick={() => handleToolbarAction(item.label)}
                                     >
                                         <item.icon className="h-3.5 w-3.5" />
@@ -243,7 +269,7 @@ export function Timeline() {
                                     )}
                                 </TooltipContent>
                             </Tooltip>
-                        </span>
+                        </div>
                     ))}
 
                     {/* Zoom indicator */}
