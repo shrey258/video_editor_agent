@@ -12,7 +12,6 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { cn } from "@/lib/utils";
 import { useVideo } from "./video-context";
 
 function formatTime(seconds: number): string {
@@ -42,7 +41,6 @@ export function Stage() {
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [isDragOver, setIsDragOver] = useState(false);
-    const [isDraggingSlider, setIsDraggingSlider] = useState(false);
 
     // ── File handling ──────────────────────────────────────────────
 
@@ -138,8 +136,6 @@ export function Stage() {
                     max={duration || 1}
                     step={0.01}
                     onValueChange={(v) => seek(v[0])}
-                    onPointerDown={() => setIsDraggingSlider(true)}
-                    onPointerUp={() => setIsDraggingSlider(false)}
                     className="w-full cursor-pointer"
                 />
 

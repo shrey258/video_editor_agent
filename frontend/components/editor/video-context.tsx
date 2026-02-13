@@ -43,12 +43,15 @@ interface VideoActions {
     toggleMute: () => void;
     setTrimStart: (t: number) => void;
     setTrimEnd: (t: number) => void;
+    setTrimRange: (start: number, end: number) => void;
     requestFullscreen: () => void;
 }
 
 type VideoContextValue = VideoState & VideoActions;
 
 const ACCEPTED_TYPES = ["video/mp4", "video/quicktime", "video/webm"];
+const SKIP_EPSILON_SEC = 0.05;
+const EXIT_EPSILON_SEC = 0.02;
 
 // ── Context ────────────────────────────────────────────────────────
 
@@ -73,9 +76,30 @@ export function VideoProvider({ children }: { children: ReactNode }) {
     const [volume, setVolumeState] = useState(80);
     const [trimStart, setTrimStartState] = useState(0);
     const [trimEnd, setTrimEndState] = useState(0);
-    const [isSeeking, setIsSeeking] = useState(false);
 
     const hasVideo = videoSrc !== null;
+    const hasTrimmedGap = trimEnd - trimStart > 0.05;
+
+    const clampToDuration = useCallback(
+        (time: number) => {
+            if (duration <= 0) return Math.max(0, time);
+            return Math.max(0, Math.min(time, duration));
+        },
+        [duration]
+    );
+
+    const snapAwayFromTrimmedGap = useCallback(
+        (time: number) => {
+            if (!hasTrimmedGap) return clampToDuration(time);
+            const clamped = clampToDuration(time);
+            if (clamped <= trimStart || clamped >= trimEnd) return clamped;
+            const midpoint = (trimStart + trimEnd) / 2;
+            return clamped < midpoint
+                ? trimStart
+                : clampToDuration(trimEnd + EXIT_EPSILON_SEC);
+        },
+        [clampToDuration, hasTrimmedGap, trimStart, trimEnd]
+    );
 
     // ── File loading ───────────────────────────────────────────────
 
@@ -99,27 +123,58 @@ export function VideoProvider({ children }: { children: ReactNode }) {
         const video = videoRef.current;
         if (!video) return;
 
+        const enforceTrimSkip = () => {
+            let nextTime = video.currentTime;
+            if (
+                hasTrimmedGap &&
+                nextTime >= trimStart - SKIP_EPSILON_SEC &&
+                nextTime < trimEnd - EXIT_EPSILON_SEC
+            ) {
+                // Nudge just past trimEnd to avoid boundary re-seek loops.
+                const target =
+                    duration <= 0
+                        ? Math.max(0, trimEnd + EXIT_EPSILON_SEC)
+                        : Math.max(0, Math.min(trimEnd + EXIT_EPSILON_SEC, duration));
+                video.currentTime = target;
+                nextTime = target;
+            }
+            return nextTime;
+        };
+
+        const toDisplayTime = (time: number) => {
+            if (
+                hasTrimmedGap &&
+                time > trimEnd &&
+                time <= trimEnd + EXIT_EPSILON_SEC
+            ) {
+                return trimEnd;
+            }
+            return time;
+        };
+
         const onTimeUpdate = () => {
-            if (!isSeeking) setCurrentTime(video.currentTime);
+            const nextTime = enforceTrimSkip();
+            setCurrentTime(toDisplayTime(nextTime));
         };
 
         let rafId: number;
         const updateFrame = () => {
-            if (isPlaying && !isSeeking && video) {
-                setCurrentTime(video.currentTime);
+            if (isPlaying && video) {
+                const nextTime = enforceTrimSkip();
+                setCurrentTime(toDisplayTime(nextTime));
                 rafId = requestAnimationFrame(updateFrame);
             }
         };
 
-        if (isPlaying && !isSeeking) {
+        if (isPlaying) {
             rafId = requestAnimationFrame(updateFrame);
         }
 
         const onLoadedMetadata = () => {
             setDuration(video.duration);
-            // Default trim: full clip
+            // Default: no cut region selected yet.
             setTrimStartState(0);
-            setTrimEndState(video.duration);
+            setTrimEndState(0);
         };
         const onEnded = () => setIsPlaying(false);
         const onPlay = () => setIsPlaying(true);
@@ -139,7 +194,7 @@ export function VideoProvider({ children }: { children: ReactNode }) {
             video.removeEventListener("pause", onPause);
             if (rafId) cancelAnimationFrame(rafId);
         };
-    }, [videoSrc, isSeeking, isPlaying]);
+    }, [videoSrc, isPlaying, hasTrimmedGap, trimStart, trimEnd, duration]);
 
     // ── Sync volume ────────────────────────────────────────────────
 
@@ -162,8 +217,14 @@ export function VideoProvider({ children }: { children: ReactNode }) {
     // ── Actions ────────────────────────────────────────────────────
 
     const play = useCallback(() => {
-        videoRef.current?.play();
-    }, []);
+        const video = videoRef.current;
+        if (!video) return;
+        if (hasTrimmedGap && video.currentTime > trimStart && video.currentTime < trimEnd) {
+            video.currentTime = trimEnd;
+            setCurrentTime(trimEnd);
+        }
+        void video.play();
+    }, [hasTrimmedGap, trimStart, trimEnd]);
 
     const pause = useCallback(() => {
         videoRef.current?.pause();
@@ -172,15 +233,24 @@ export function VideoProvider({ children }: { children: ReactNode }) {
     const togglePlayPause = useCallback(() => {
         const video = videoRef.current;
         if (!video) return;
-        video.paused ? video.play() : video.pause();
-    }, []);
+        if (video.paused) {
+            if (hasTrimmedGap && video.currentTime > trimStart && video.currentTime < trimEnd) {
+                video.currentTime = trimEnd;
+                setCurrentTime(trimEnd);
+            }
+            void video.play();
+        } else {
+            video.pause();
+        }
+    }, [hasTrimmedGap, trimStart, trimEnd]);
 
     const seek = useCallback((time: number) => {
         const video = videoRef.current;
         if (!video) return;
-        video.currentTime = time;
-        setCurrentTime(time);
-    }, []);
+        const nextTime = snapAwayFromTrimmedGap(time);
+        video.currentTime = nextTime;
+        setCurrentTime(nextTime);
+    }, [snapAwayFromTrimmedGap]);
 
     const setVolume = useCallback((v: number) => {
         setVolumeState(v);
@@ -191,18 +261,33 @@ export function VideoProvider({ children }: { children: ReactNode }) {
         setIsMuted((prev) => !prev);
     }, []);
 
+    const setTrimRange = useCallback(
+        (start: number, end: number) => {
+            const boundedStart = clampToDuration(start);
+            const boundedEnd = clampToDuration(end);
+            if (boundedEnd - boundedStart <= 0.05) {
+                setTrimStartState(0);
+                setTrimEndState(0);
+                return;
+            }
+            setTrimStartState(boundedStart);
+            setTrimEndState(boundedEnd);
+        },
+        [clampToDuration]
+    );
+
     const setTrimStart = useCallback(
         (t: number) => {
-            setTrimStartState(Math.max(0, Math.min(t, trimEnd - 0.1)));
+            setTrimRange(t, trimEnd);
         },
-        [trimEnd]
+        [setTrimRange, trimEnd]
     );
 
     const setTrimEnd = useCallback(
         (t: number) => {
-            setTrimEndState(Math.max(trimStart + 0.1, Math.min(t, duration)));
+            setTrimRange(trimStart, t);
         },
-        [trimStart, duration]
+        [setTrimRange, trimStart]
     );
 
     const requestFullscreen = useCallback(() => {
@@ -237,6 +322,7 @@ export function VideoProvider({ children }: { children: ReactNode }) {
         toggleMute,
         setTrimStart,
         setTrimEnd,
+        setTrimRange,
         requestFullscreen,
     };
 

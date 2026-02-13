@@ -10,7 +10,6 @@ import {
     Undo2,
     Redo2,
     RotateCcw,
-    GripVertical,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -87,19 +86,14 @@ export function Timeline() {
         duration,
         currentTime,
         hasVideo,
-        trimStart,
-        trimEnd,
         seek,
-        setTrimStart,
-        setTrimEnd,
+        setTrimRange,
     } = useVideo();
 
     const [zoom, setZoom] = useState(1);
     const [isAddSegmentMenuOpen, setIsAddSegmentMenuOpen] = useState(false);
     const [trimWidget, setTrimWidget] = useState<{ isVisible: boolean; startTime: number; duration: number } | null>(null);
     const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
-    const [isDraggingTrimStart, setIsDraggingTrimStart] = useState(false);
-    const [isDraggingTrimEnd, setIsDraggingTrimEnd] = useState(false);
     const [dragState, setDragState] = useState<{
         type: "move" | "resize-start" | "resize-end";
         startX: number;
@@ -108,6 +102,21 @@ export function Timeline() {
     } | null>(null);
     const [containerWidth, setContainerWidth] = useState(0);
     const trackRef = useRef<HTMLDivElement>(null);
+    const hasMovedDuringDragRef = useRef(false);
+    const suppressNextTrackClickRef = useRef(false);
+    const trimStart = trimWidget?.isVisible ? trimWidget.startTime : 0;
+    const trimEnd = trimWidget?.isVisible ? trimWidget.startTime + trimWidget.duration : 0;
+
+    const commitTrimWidgetToContext = useCallback(
+        (widget: { isVisible: boolean; startTime: number; duration: number } | null) => {
+            if (!widget?.isVisible) {
+                setTrimRange(0, 0);
+                return;
+            }
+            setTrimRange(widget.startTime, widget.startTime + widget.duration);
+        },
+        [setTrimRange]
+    );
 
     // Track container width so the timeline always fills the available space
     useEffect(() => {
@@ -152,6 +161,9 @@ export function Timeline() {
 
         const handleMouseMove = (e: MouseEvent) => {
             const deltaX = e.clientX - dragState.startX;
+            if (Math.abs(deltaX) > 1) {
+                hasMovedDuringDragRef.current = true;
+            }
             const deltaSeconds = deltaX / pxPerSecond;
 
             if (dragState.type === "move") {
@@ -194,6 +206,11 @@ export function Timeline() {
         };
 
         const handleMouseUp = () => {
+            if (hasMovedDuringDragRef.current) {
+                suppressNextTrackClickRef.current = true;
+                hasMovedDuringDragRef.current = false;
+            }
+            commitTrimWidgetToContext(trimWidget);
             setDragState(null);
         };
 
@@ -204,24 +221,19 @@ export function Timeline() {
             window.removeEventListener("mousemove", handleMouseMove);
             window.removeEventListener("mouseup", handleMouseUp);
         };
-    }, [dragState, pxPerSecond, duration, trimWidget]);
+    }, [dragState, pxPerSecond, duration, trimWidget, commitTrimWidgetToContext]);
 
     /* Dragging logic — uses global mouse events for smooth drag even outside the track */
     useEffect(() => {
-        if (!isDraggingPlayhead && !isDraggingTrimStart && !isDraggingTrimEnd)
-            return;
+        if (!isDraggingPlayhead) return;
 
         function onMouseMove(e: MouseEvent) {
             const time = posToTime(e.clientX);
-            if (isDraggingPlayhead) seek(time);
-            if (isDraggingTrimStart) setTrimStart(time);
-            if (isDraggingTrimEnd) setTrimEnd(time);
+            seek(time);
         }
 
         function onMouseUp() {
             setIsDraggingPlayhead(false);
-            setIsDraggingTrimStart(false);
-            setIsDraggingTrimEnd(false);
         }
 
         window.addEventListener("mousemove", onMouseMove);
@@ -232,12 +244,8 @@ export function Timeline() {
         };
     }, [
         isDraggingPlayhead,
-        isDraggingTrimStart,
-        isDraggingTrimEnd,
         posToTime,
         seek,
-        setTrimStart,
-        setTrimEnd,
     ]);
 
     /** Auto-scroll to keep the playhead in view during playback */
@@ -254,7 +262,11 @@ export function Timeline() {
     }, [currentTime, pxPerSecond, isDraggingPlayhead]);
 
     function handleTrackClick(e: React.MouseEvent) {
-        if (isDraggingTrimStart || isDraggingTrimEnd || !hasVideo) return;
+        if (suppressNextTrackClickRef.current) {
+            suppressNextTrackClickRef.current = false;
+            return;
+        }
+        if (!hasVideo) return;
         const time = posToTime(e.clientX);
         seek(time);
     }
@@ -282,11 +294,16 @@ export function Timeline() {
                 break;
             case "Reset timeline":
                 setZoom(1);
-                setTrimStart(0);
-                setTrimEnd(duration);
+                setTrimRange(0, 0);
+                setTrimWidget(null);
                 break;
         }
     }
+
+    useEffect(() => {
+        if (trimWidget) return;
+        setTrimRange(0, 0);
+    }, [trimWidget, setTrimRange]);
 
     return (
         <TooltipProvider delayDuration={200}>
@@ -307,7 +324,11 @@ export function Timeline() {
                                         size="sm"
                                         className="h-9 w-full justify-start gap-2 px-2 text-zinc-100 hover:bg-zinc-800 hover:text-white"
                                         onClick={() => {
-                                            setTrimWidget({ isVisible: true, startTime: currentTime, duration: 2 });
+                                            const startTime = Math.max(0, Math.min(currentTime, Math.max(0, effectiveDuration - 0.5)));
+                                            const segmentDuration = Math.min(2, Math.max(0.5, effectiveDuration - startTime));
+                                            const nextWidget = { isVisible: true, startTime, duration: segmentDuration };
+                                            setTrimWidget(nextWidget);
+                                            commitTrimWidgetToContext(nextWidget);
                                             setIsAddSegmentMenuOpen(false);
                                         }}
                                     >
@@ -413,6 +434,7 @@ export function Timeline() {
                                         }}
                                         onMouseDown={(e) => {
                                             e.stopPropagation();
+                                            hasMovedDuringDragRef.current = false;
                                             setDragState({
                                                 type: "move",
                                                 startX: e.clientX,
@@ -426,6 +448,7 @@ export function Timeline() {
                                             className="absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize hover:bg-emerald-500/20 z-20"
                                             onMouseDown={(e) => {
                                                 e.stopPropagation();
+                                                hasMovedDuringDragRef.current = false;
                                                 setDragState({
                                                     type: "resize-start",
                                                     startX: e.clientX,
@@ -446,6 +469,7 @@ export function Timeline() {
                                             className="absolute right-0 top-0 bottom-0 w-3 cursor-ew-resize hover:bg-emerald-500/20 z-20"
                                             onMouseDown={(e) => {
                                                 e.stopPropagation();
+                                                hasMovedDuringDragRef.current = false;
                                                 setDragState({
                                                     type: "resize-end",
                                                     startX: e.clientX,
@@ -455,6 +479,17 @@ export function Timeline() {
                                             }}
                                         />
                                     </div>
+                                )}
+
+                                {/* Removed segment mask (non-playable in preview) */}
+                                {hasVideo && trimEnd - trimStart > 0.05 && (
+                                    <div
+                                        className="absolute inset-y-0 z-[9] rounded-md border border-red-400/50 bg-red-500/20"
+                                        style={{
+                                            left: `${trimStart * pxPerSecond + 4}px`,
+                                            width: `${(trimEnd - trimStart) * pxPerSecond}px`,
+                                        }}
+                                    />
                                 )}
 
                                 {/* Playhead - Centered and visible */}
