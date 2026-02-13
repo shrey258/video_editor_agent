@@ -1,19 +1,18 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect, type DragEvent, type ChangeEvent } from "react";
+import { useCallback, useRef, type DragEvent, type ChangeEvent } from "react";
+import { useState } from "react";
 import {
     Play,
     Pause,
     Volume2,
     VolumeX,
     Maximize2,
-    Minimize2,
     Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-
-const ACCEPTED_TYPES = ["video/mp4", "video/quicktime", "video/webm"];
+import { useVideo } from "./video-context";
 
 function formatTime(seconds: number): string {
     const m = Math.floor(seconds / 60);
@@ -23,32 +22,27 @@ function formatTime(seconds: number): string {
 }
 
 export function Stage() {
-    const videoRef = useRef<HTMLVideoElement>(null);
-    const fileInputRef = useRef<HTMLInputElement>(null);
+    const {
+        videoSrc,
+        videoRef,
+        hasVideo,
+        isPlaying,
+        isMuted,
+        volume,
+        currentTime,
+        duration,
+        loadFile,
+        togglePlayPause,
+        seek,
+        setVolume,
+        toggleMute,
+        requestFullscreen,
+    } = useVideo();
 
-    const [videoSrc, setVideoSrc] = useState<string | null>(null);
-    const [isPlaying, setIsPlaying] = useState(false);
-    const [isMuted, setIsMuted] = useState(false);
-    const [volume, setVolume] = useState([80]);
-    const [currentTime, setCurrentTime] = useState(0);
-    const [duration, setDuration] = useState(0);
+    const fileInputRef = useRef<HTMLInputElement>(null);
     const [isDragOver, setIsDragOver] = useState(false);
-    const [isSeeking, setIsSeeking] = useState(false);
 
     // ── File handling ──────────────────────────────────────────────
-
-    const loadFile = useCallback((file: File) => {
-        if (!ACCEPTED_TYPES.includes(file.type)) return;
-
-        // Revoke previous object URL to avoid memory leak
-        setVideoSrc((prev) => {
-            if (prev) URL.revokeObjectURL(prev);
-            return URL.createObjectURL(file);
-        });
-        setIsPlaying(false);
-        setCurrentTime(0);
-        setDuration(0);
-    }, []);
 
     const handleDrop = useCallback(
         (e: DragEvent<HTMLDivElement>) => {
@@ -73,113 +67,12 @@ export function Stage() {
         (e: ChangeEvent<HTMLInputElement>) => {
             const file = e.target.files?.[0];
             if (file) loadFile(file);
-            // Reset so the same file can be re-selected
             e.target.value = "";
         },
         [loadFile]
     );
 
-    // ── Video element event listeners ──────────────────────────────
-
-    useEffect(() => {
-        const video = videoRef.current;
-        if (!video) return;
-
-        const onTimeUpdate = () => {
-            if (!isSeeking) setCurrentTime(video.currentTime);
-        };
-        const onLoadedMetadata = () => {
-            setDuration(video.duration);
-        };
-        const onEnded = () => {
-            setIsPlaying(false);
-        };
-
-        video.addEventListener("timeupdate", onTimeUpdate);
-        video.addEventListener("loadedmetadata", onLoadedMetadata);
-        video.addEventListener("ended", onEnded);
-        return () => {
-            video.removeEventListener("timeupdate", onTimeUpdate);
-            video.removeEventListener("loadedmetadata", onLoadedMetadata);
-            video.removeEventListener("ended", onEnded);
-        };
-    }, [videoSrc, isSeeking]);
-
-    // ── Sync volume to video element ───────────────────────────────
-
-    useEffect(() => {
-        const video = videoRef.current;
-        if (!video) return;
-        video.volume = isMuted ? 0 : volume[0] / 100;
-        video.muted = isMuted;
-    }, [volume, isMuted]);
-
-    // ── Controls ───────────────────────────────────────────────────
-
-    const handlePlayPause = useCallback(() => {
-        const video = videoRef.current;
-        if (!video) return;
-
-        if (video.paused) {
-            video.play();
-            setIsPlaying(true);
-        } else {
-            video.pause();
-            setIsPlaying(false);
-        }
-    }, []);
-
-    const handleSeek = useCallback((value: number[]) => {
-        const video = videoRef.current;
-        if (!video) return;
-        video.currentTime = value[0];
-        setCurrentTime(value[0]);
-    }, []);
-
-    const handleSeekStart = useCallback(() => {
-        setIsSeeking(true);
-    }, []);
-
-    const handleSeekEnd = useCallback((value: number[]) => {
-        const video = videoRef.current;
-        if (!video) return;
-        video.currentTime = value[0];
-        setCurrentTime(value[0]);
-        setIsSeeking(false);
-    }, []);
-
-    const handleToggleMute = useCallback(() => {
-        setIsMuted((prev) => !prev);
-    }, []);
-
-    const handleVolumeChange = useCallback((v: number[]) => {
-        setVolume(v);
-        if (v[0] > 0) setIsMuted(false);
-    }, []);
-
-    const handleFullscreen = useCallback(() => {
-        const video = videoRef.current;
-        if (!video) return;
-
-        if (document.fullscreenElement) {
-            document.exitFullscreen();
-        } else {
-            video.requestFullscreen();
-        }
-    }, []);
-
-    // ── Cleanup object URL on unmount ──────────────────────────────
-
-    useEffect(() => {
-        return () => {
-            if (videoSrc) URL.revokeObjectURL(videoSrc);
-        };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-
     // ── Render ─────────────────────────────────────────────────────
-
-    const hasVideo = videoSrc !== null;
 
     return (
         <div
@@ -200,11 +93,10 @@ export function Stage() {
             {/* Video Preview Area */}
             <div className="relative flex w-full flex-1 items-center justify-center p-4">
                 {hasVideo ? (
-                    /* Video fills the available area, object-contain preserves ratio */
                     <div className="relative h-full w-full overflow-hidden bg-black">
                         <video
                             ref={videoRef}
-                            src={videoSrc}
+                            src={videoSrc!}
                             className="absolute inset-0 h-full w-full object-contain"
                             playsInline
                             preload="metadata"
@@ -228,15 +120,9 @@ export function Stage() {
                             </p>
                         </div>
                         <div className="flex items-center gap-2">
-                            <span className="rounded-md bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">
-                                MP4
-                            </span>
-                            <span className="rounded-md bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">
-                                MOV
-                            </span>
-                            <span className="rounded-md bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">
-                                WEBM
-                            </span>
+                            <span className="rounded-md bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">MP4</span>
+                            <span className="rounded-md bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">MOV</span>
+                            <span className="rounded-md bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">WEBM</span>
                         </div>
                     </button>
                 )}
@@ -249,9 +135,7 @@ export function Stage() {
                     value={[currentTime]}
                     max={duration || 1}
                     step={0.01}
-                    onValueChange={handleSeek}
-                    onPointerDown={handleSeekStart}
-                    onPointerUp={() => handleSeekEnd([currentTime])}
+                    onValueChange={(v) => seek(v[0])}
                     className="w-full cursor-pointer"
                 />
 
@@ -261,34 +145,26 @@ export function Stage() {
                         <Button
                             variant="ghost"
                             size="icon"
-                            onClick={handlePlayPause}
+                            onClick={togglePlayPause}
                             className="h-7 w-7 text-zinc-300 hover:text-white"
                         >
-                            {isPlaying ? (
-                                <Pause className="h-4 w-4" />
-                            ) : (
-                                <Play className="h-4 w-4" />
-                            )}
+                            {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
                         </Button>
 
                         <Button
                             variant="ghost"
                             size="icon"
-                            onClick={handleToggleMute}
+                            onClick={toggleMute}
                             className="h-7 w-7 text-zinc-300 hover:text-white"
                         >
-                            {isMuted || volume[0] === 0 ? (
-                                <VolumeX className="h-4 w-4" />
-                            ) : (
-                                <Volume2 className="h-4 w-4" />
-                            )}
+                            {isMuted || volume === 0 ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
                         </Button>
 
                         <Slider
-                            value={isMuted ? [0] : volume}
+                            value={isMuted ? [0] : [volume]}
                             max={100}
                             step={1}
-                            onValueChange={handleVolumeChange}
+                            onValueChange={(v) => setVolume(v[0])}
                             className="w-20"
                         />
                     </div>
@@ -303,7 +179,7 @@ export function Stage() {
                     <Button
                         variant="ghost"
                         size="icon"
-                        onClick={handleFullscreen}
+                        onClick={requestFullscreen}
                         className="h-7 w-7 text-zinc-400 hover:text-white"
                     >
                         <Maximize2 className="h-3.5 w-3.5" />
