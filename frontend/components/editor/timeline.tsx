@@ -34,10 +34,10 @@ const TOOLBAR_ITEMS = [
 ] as const;
 
 /** Generate ruler tick marks */
-function generateTicks(duration: number, zoom: number) {
+function generateTicks(visibleDuration: number, zoom: number) {
     const interval = zoom <= 1 ? 5 : zoom <= 2 ? 2 : 1;
     const ticks: number[] = [];
-    for (let t = 0; t <= duration; t += interval) {
+    for (let t = 0; t <= visibleDuration; t += interval) {
         ticks.push(t);
     }
     return ticks;
@@ -65,13 +65,34 @@ export function Timeline() {
     const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
     const [isDraggingTrimStart, setIsDraggingTrimStart] = useState(false);
     const [isDraggingTrimEnd, setIsDraggingTrimEnd] = useState(false);
+    const [containerWidth, setContainerWidth] = useState(0);
     const trackRef = useRef<HTMLDivElement>(null);
+
+    // Track container width so the timeline always fills the available space
+    useEffect(() => {
+        const el = trackRef.current;
+        if (!el) return;
+        const ro = new ResizeObserver(([entry]) => {
+            setContainerWidth(entry.contentRect.width);
+        });
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, []);
 
     // Use real duration or a sensible fallback (30s) for the empty state
     const effectiveDuration = duration > 0 ? duration : 30;
-    const pxPerSecond = 40 * zoom;
-    const trackWidth = effectiveDuration * pxPerSecond;
-    const ticks = generateTicks(effectiveDuration, zoom);
+    // At zoom=1, the video clip fills the entire container width (48px padding for the track)
+    const trackPadding = 48;
+    const basePxPerSecond = containerWidth > trackPadding
+        ? (containerWidth - trackPadding) / effectiveDuration
+        : 40;
+    const pxPerSecond = basePxPerSecond * zoom;
+    const videoTrackWidth = effectiveDuration * pxPerSecond;
+    // Content width: at least the container, or wider when zoomed in
+    const contentWidth = Math.max(videoTrackWidth + trackPadding, containerWidth);
+    // Extend ruler ticks to cover the full visible width
+    const visibleDurationInSeconds = contentWidth / pxPerSecond;
+    const ticks = generateTicks(visibleDurationInSeconds, zoom);
 
     const posToTime = useCallback(
         (clientX: number) => {
@@ -205,7 +226,7 @@ export function Timeline() {
                 >
                     <div
                         className="relative min-h-full"
-                        style={{ width: `${trackWidth + 48}px` }}
+                        style={{ width: `${contentWidth}px` }}
                     >
                         {/* Ruler */}
                         <div className="relative h-6 border-b border-zinc-800/60">
@@ -226,14 +247,15 @@ export function Timeline() {
                         {/* Track */}
                         <div className="relative px-6 py-3">
                             {/* Track bar */}
+                            {/* Track bar spans the full visible width */}
                             <div className="relative h-12 overflow-hidden rounded-md bg-zinc-800/60">
-                                {/* Full clip visual */}
+                                {/* Video clip block — only as wide as the video, sitting at the left */}
                                 {hasVideo && (
                                     <div
-                                        className="absolute inset-y-0 left-0 bg-gradient-to-r from-emerald-700/30 via-emerald-600/20 to-emerald-700/30"
-                                        style={{ width: `${duration * pxPerSecond}px` }}
+                                        className="absolute inset-y-0 left-0 rounded-md bg-gradient-to-r from-emerald-700/30 via-emerald-600/20 to-emerald-700/30"
+                                        style={{ width: `${videoTrackWidth}px` }}
                                     >
-                                        {/* Waveform-like decoration (deterministic) */}
+                                        {/* Waveform decoration */}
                                         <div className="flex h-full items-center gap-px px-2">
                                             {Array.from({ length: Math.floor(duration * 3) }).map((_, i) => {
                                                 const pseudo = ((i * 2654435761) >>> 0) / 4294967296;
