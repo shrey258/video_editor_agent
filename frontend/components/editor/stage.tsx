@@ -140,10 +140,7 @@ export function Stage() {
                     onValueChange={(v) => seek(v[0])}
                     onPointerDown={() => setIsDraggingSlider(true)}
                     onPointerUp={() => setIsDraggingSlider(false)}
-                    className={cn(
-                        "w-full cursor-pointer",
-                        !isDraggingSlider && "[&>span:first-child>span]:transition-all [&>span:first-child>span]:duration-300 [&>span:first-child>span]:ease-linear [&>span:last-child]:transition-all [&>span:last-child]:duration-300 [&>span:last-child]:ease-linear"
-                    )}
+                    className="w-full cursor-pointer"
                 />
 
                 {/* Controls row */}

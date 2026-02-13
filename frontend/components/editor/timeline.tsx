@@ -71,9 +71,14 @@ function generateTicks(visibleDuration: number, zoom: number) {
     return { majorTicks, minorTicks };
 }
 
-function formatRulerTime(seconds: number): string {
+function formatRulerTime(seconds: number, zoom: number): string {
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
+    // If zoomed in significantly, show one decimal place for "smart" precision
+    if (zoom > 1.5) {
+        const ms = Math.floor((seconds % 1) * 10);
+        return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${ms}`;
+    }
     return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
@@ -126,7 +131,8 @@ export function Timeline() {
         (clientX: number) => {
             if (!trackRef.current) return 0;
             const rect = trackRef.current.getBoundingClientRect();
-            const x = clientX - rect.left + trackRef.current.scrollLeft;
+            // Important: subtract rect.left + 24 to account for both viewport offset and track padding
+            const x = clientX - rect.left + trackRef.current.scrollLeft - 24;
             return Math.max(0, Math.min(effectiveDuration, x / pxPerSecond));
         },
         [pxPerSecond, effectiveDuration]
@@ -259,13 +265,12 @@ export function Timeline() {
                         {/* Track */}
                         <div className="relative px-6 py-3 flex-1 flex flex-col">
                             {/* Track bar */}
-                            {/* Track bar spans the full visible width */}
-                            <div className="relative flex-1 overflow-hidden rounded-md bg-zinc-800/60">
-                                {/* Video clip block — only as wide as the video, sitting at the left */}
+                            <div className="relative flex-1 rounded-md bg-zinc-800/60 mt-2 select-none">
+                                {/* Video clip block */}
                                 {hasVideo && (
                                     <div
-                                        className="absolute inset-y-0 left-0 overflow-hidden rounded-md bg-gradient-to-r from-emerald-700/30 via-emerald-600/20 to-emerald-700/30"
-                                        style={{ width: `${videoTrackWidth}px` }}
+                                        className="absolute inset-y-0 left-0 overflow-hidden rounded-md border-y border-x-4 border-emerald-500 bg-gradient-to-r from-emerald-700/30 via-emerald-600/20 to-emerald-700/30"
+                                        style={{ width: `${videoTrackWidth + 8}px` }}
                                     >
                                         {/* Top line for ticks */}
                                         <div className="absolute top-0 left-0 right-0 h-px bg-[#D1D1D1]/20" />
@@ -299,76 +304,37 @@ export function Timeline() {
                                                     className="absolute top-4 -translate-x-1/2 whitespace-nowrap font-sans text-[10pt] font-medium text-[#666666]"
                                                     style={{ color: "#666666" }}
                                                 >
-                                                    {formatRulerTime(t)}
+                                                    {formatRulerTime(t, zoom)}
                                                 </span>
                                             </div>
                                         ))}
                                     </div>
                                 )}
 
-                                {/* Trim selection overlay */}
-                                {hasVideo && trimEnd > trimStart && (
+                                {/* Playhead - Centered and visible */}
+                                {hasVideo && (
                                     <div
-                                        className="absolute inset-y-0 border-y-2 border-primary/60 bg-primary/10"
-                                        style={{
-                                            left: `${trimStart * pxPerSecond}px`,
-                                            width: `${(trimEnd - trimStart) * pxPerSecond}px`,
-                                        }}
-                                    >
-                                        {/* Start handle */}
-                                        <div
-                                            className="absolute -left-1.5 inset-y-0 z-10 flex w-3 cursor-ew-resize items-center justify-center rounded-l-sm bg-primary transition-colors hover:bg-primary/80"
-                                            onMouseDown={(e) => {
-                                                e.stopPropagation();
-                                                setIsDraggingTrimStart(true);
-                                            }}
-                                        >
-                                            <GripVertical className="h-3 w-3 text-primary-foreground" />
-                                        </div>
-
-                                        {/* End handle */}
-                                        <div
-                                            className="absolute -right-1.5 inset-y-0 z-10 flex w-3 cursor-ew-resize items-center justify-center rounded-r-sm bg-primary transition-colors hover:bg-primary/80"
-                                            onMouseDown={(e) => {
-                                                e.stopPropagation();
-                                                setIsDraggingTrimEnd(true);
-                                            }}
-                                        >
-                                            <GripVertical className="h-3 w-3 text-primary-foreground" />
-                                        </div>
-
-                                        {/* Trim label */}
-                                        <div className="absolute -top-5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-primary/90 px-1.5 py-0.5 text-[9px] font-medium text-primary-foreground">
-                                            {formatRulerTime(trimStart)} → {formatRulerTime(trimEnd)}
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Playhead */}
-                            {hasVideo && (
-                                <div
-                                    className="absolute top-0 bottom-0 z-20 flex flex-col items-center"
-                                    style={{ left: `${currentTime * pxPerSecond + 24}px`,
-                                    transition: isDraggingPlayhead ? "none" : "left 0.3s linear",
-                                }}
-                                >
-                                    {/* Head triangle */}
-                                    <div
-                                        className="h-2.5 w-3 cursor-grab active:cursor-grabbing"
                                         onMouseDown={(e) => {
                                             e.stopPropagation();
                                             setIsDraggingPlayhead(true);
                                         }}
-                                        style={{
-                                            clipPath: "polygon(0 0, 100% 0, 50% 100%)",
-                                            background: "hsl(var(--primary))",
-                                        }}
-                                    />
-                                    {/* Line */}
-                                    <div className="w-px flex-1 bg-primary" />
-                                </div>
-                            )}
+                                        className="absolute bottom-0 top-[-10px] z-20 flex flex-col items-center cursor-grab active:cursor-grabbing -translate-x-1/2 pointer-events-auto"
+                                        style={{ left: `${currentTime * pxPerSecond + 4}px` }}
+                                    >
+                                        {/* Head triangle */}
+                                        <div
+                                            className="h-3 w-3 relative z-30"
+                                            style={{
+                                                clipPath: "polygon(0 0, 100% 0, 50% 100%)",
+                                                background: "hsl(var(--primary))",
+                                                filter: "drop-shadow(0 1px 1px rgb(0 0 0 / 0.3))"
+                                            }}
+                                        />
+                                        {/* Line */}
+                                        <div className="w-[1.5px] flex-1 bg-primary shadow-[0_0_4px_rgba(0,0,0,0.3)]" />
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
                 </div>

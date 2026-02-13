@@ -102,6 +102,19 @@ export function VideoProvider({ children }: { children: ReactNode }) {
         const onTimeUpdate = () => {
             if (!isSeeking) setCurrentTime(video.currentTime);
         };
+
+        let rafId: number;
+        const updateFrame = () => {
+            if (isPlaying && !isSeeking && video) {
+                setCurrentTime(video.currentTime);
+                rafId = requestAnimationFrame(updateFrame);
+            }
+        };
+
+        if (isPlaying && !isSeeking) {
+            rafId = requestAnimationFrame(updateFrame);
+        }
+
         const onLoadedMetadata = () => {
             setDuration(video.duration);
             // Default trim: full clip
@@ -124,8 +137,9 @@ export function VideoProvider({ children }: { children: ReactNode }) {
             video.removeEventListener("ended", onEnded);
             video.removeEventListener("play", onPlay);
             video.removeEventListener("pause", onPause);
+            if (rafId) cancelAnimationFrame(rafId);
         };
-    }, [videoSrc, isSeeking]);
+    }, [videoSrc, isSeeking, isPlaying]);
 
     // ── Sync volume ────────────────────────────────────────────────
 
