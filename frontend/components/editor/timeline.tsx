@@ -225,52 +225,20 @@ export function Timeline() {
                     onClick={handleTrackClick}
                 >
                     <div
-                        className="relative min-h-full"
+                        className="relative min-h-full flex flex-col"
                         style={{ width: `${contentWidth}px` }}
                     >
-                        {/* Ruler */}
-                        <div className="relative h-6 border-b border-zinc-800/60">
-                            {ticks.map((t) => (
-                                <div
-                                    key={t}
-                                    className="absolute top-0 flex h-full flex-col items-center"
-                                    style={{ left: `${t * pxPerSecond + 24}px` }}
-                                >
-                                    <div className="h-2.5 w-px bg-zinc-700" />
-                                    <span className="mt-0.5 text-[9px] tabular-nums text-zinc-500 select-none">
-                                        {formatRulerTime(t)}
-                                    </span>
-                                </div>
-                            ))}
-                        </div>
-
                         {/* Track */}
-                        <div className="relative px-6 py-3">
+                        <div className="relative px-6 py-3 flex-1 flex flex-col">
                             {/* Track bar */}
                             {/* Track bar spans the full visible width */}
-                            <div className="relative h-12 overflow-hidden rounded-md bg-zinc-800/60">
+                            <div className="relative flex-1 overflow-hidden rounded-md bg-zinc-800/60">
                                 {/* Video clip block — only as wide as the video, sitting at the left */}
                                 {hasVideo && (
                                     <div
                                         className="absolute inset-y-0 left-0 rounded-md bg-gradient-to-r from-emerald-700/30 via-emerald-600/20 to-emerald-700/30"
                                         style={{ width: `${videoTrackWidth}px` }}
-                                    >
-                                        {/* Waveform decoration */}
-                                        <div className="flex h-full items-center gap-px px-2">
-                                            {Array.from({ length: Math.floor(duration * 3) }).map((_, i) => {
-                                                const pseudo = ((i * 2654435761) >>> 0) / 4294967296;
-                                                return (
-                                                    <div
-                                                        key={i}
-                                                        className="w-[2px] shrink-0 rounded-full bg-emerald-500/40"
-                                                        style={{
-                                                            height: `${20 + Math.sin(i * 0.7) * 15 + pseudo * 10}%`,
-                                                        }}
-                                                    />
-                                                );
-                                            })}
-                                        </div>
-                                    </div>
+                                    />
                                 )}
 
                                 {/* Trim selection overlay */}
