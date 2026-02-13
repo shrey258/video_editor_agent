@@ -33,14 +33,42 @@ const TOOLBAR_ITEMS = [
     { icon: RotateCcw, label: "Reset timeline", shortcut: "" },
 ] as const;
 
-/** Generate ruler tick marks */
+/** Generate ruler tick marks with major and minor intervals */
 function generateTicks(visibleDuration: number, zoom: number) {
-    const interval = zoom <= 1 ? 5 : zoom <= 2 ? 2 : 1;
-    const ticks: number[] = [];
-    for (let t = 0; t <= visibleDuration; t += interval) {
-        ticks.push(t);
+    let majorInterval = 1;
+    let minorSubdivisions = 0;
+
+    if (zoom <= 0.25) {
+        majorInterval = 10;
+        minorSubdivisions = 0;
+    } else if (zoom <= 0.5) {
+        majorInterval = 5;
+        minorSubdivisions = 0;
+    } else if (zoom <= 1) {
+        majorInterval = 2;
+        minorSubdivisions = 4; // every 0.5s
+    } else if (zoom <= 2) {
+        majorInterval = 1;
+        minorSubdivisions = 4; // every 0.25s
+    } else {
+        majorInterval = 1;
+        minorSubdivisions = 9; // every 0.1s
     }
-    return ticks;
+
+    const majorTicks: number[] = [];
+    const minorTicks: number[] = [];
+
+    for (let t = 0; t <= visibleDuration; t += majorInterval) {
+        majorTicks.push(t);
+        if (minorSubdivisions > 0 && t + majorInterval <= visibleDuration) {
+            const step = majorInterval / (minorSubdivisions + 1);
+            for (let i = 1; i <= minorSubdivisions; i++) {
+                minorTicks.push(t + i * step);
+            }
+        }
+    }
+
+    return { majorTicks, minorTicks };
 }
 
 function formatRulerTime(seconds: number): string {
@@ -236,9 +264,46 @@ export function Timeline() {
                                 {/* Video clip block — only as wide as the video, sitting at the left */}
                                 {hasVideo && (
                                     <div
-                                        className="absolute inset-y-0 left-0 rounded-md bg-gradient-to-r from-emerald-700/30 via-emerald-600/20 to-emerald-700/30"
+                                        className="absolute inset-y-0 left-0 overflow-hidden rounded-md bg-gradient-to-r from-emerald-700/30 via-emerald-600/20 to-emerald-700/30"
                                         style={{ width: `${videoTrackWidth}px` }}
-                                    />
+                                    >
+                                        {/* Top line for ticks */}
+                                        <div className="absolute top-0 left-0 right-0 h-px bg-[#D1D1D1]/20" />
+
+                                        {/* Minor Ticks */}
+                                        {ticks.minorTicks.map((t) => (
+                                            <div
+                                                key={`minor-${t}`}
+                                                className="absolute top-0 w-px bg-[#D1D1D1]"
+                                                style={{
+                                                    left: `${t * pxPerSecond}px`,
+                                                    height: "8px",
+                                                }}
+                                            />
+                                        ))}
+
+                                        {/* Major Ticks & Labels */}
+                                        {ticks.majorTicks.map((t) => (
+                                            <div
+                                                key={`major-${t}`}
+                                                className="absolute top-0 flex flex-col items-center"
+                                                style={{ left: `${t * pxPerSecond}px` }}
+                                            >
+                                                {/* Major Tick */}
+                                                <div
+                                                    className="w-px bg-[#D1D1D1]"
+                                                    style={{ height: "15px" }}
+                                                />
+                                                {/* Label */}
+                                                <span
+                                                    className="absolute top-4 -translate-x-1/2 whitespace-nowrap font-sans text-[10pt] font-medium text-[#666666]"
+                                                    style={{ color: "#666666" }}
+                                                >
+                                                    {formatRulerTime(t)}
+                                                </span>
+                                            </div>
+                                        ))}
+                                    </div>
                                 )}
 
                                 {/* Trim selection overlay */}
