@@ -96,9 +96,16 @@ export function Timeline() {
 
     const [zoom, setZoom] = useState(1);
     const [isAddSegmentMenuOpen, setIsAddSegmentMenuOpen] = useState(false);
+    const [trimWidget, setTrimWidget] = useState<{ isVisible: boolean; startTime: number; duration: number } | null>(null);
     const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
     const [isDraggingTrimStart, setIsDraggingTrimStart] = useState(false);
     const [isDraggingTrimEnd, setIsDraggingTrimEnd] = useState(false);
+    const [dragState, setDragState] = useState<{
+        type: "move" | "resize-start" | "resize-end";
+        startX: number;
+        initialStartTime: number;
+        initialDuration: number;
+    } | null>(null);
     const [containerWidth, setContainerWidth] = useState(0);
     const trackRef = useRef<HTMLDivElement>(null);
 
@@ -138,6 +145,66 @@ export function Timeline() {
         },
         [pxPerSecond, effectiveDuration]
     );
+
+    /* Handle global mouse move/up for TRIM WIDGET dragging/resizing */
+    useEffect(() => {
+        if (!dragState || !trimWidget) return;
+
+        const handleMouseMove = (e: MouseEvent) => {
+            const deltaX = e.clientX - dragState.startX;
+            const deltaSeconds = deltaX / pxPerSecond;
+
+            if (dragState.type === "move") {
+                let newStartTime = dragState.initialStartTime + deltaSeconds;
+                // Constrain to start >= 0
+                if (newStartTime < 0) newStartTime = 0;
+                // Constrain to end <= duration (optional, but good practice)
+                if (duration && newStartTime + dragState.initialDuration > duration) {
+                    newStartTime = duration - dragState.initialDuration;
+                }
+
+                setTrimWidget((prev) => prev ? { ...prev, startTime: newStartTime } : null);
+            } else if (dragState.type === "resize-start") {
+                let newStartTime = dragState.initialStartTime + deltaSeconds;
+                let newDuration = dragState.initialDuration - deltaSeconds;
+
+                // Constraints: duration >= 0.5s, startTime >= 0
+                if (newDuration < 0.5) {
+                    newDuration = 0.5;
+                    newStartTime = dragState.initialStartTime + dragState.initialDuration - 0.5;
+                }
+                if (newStartTime < 0) {
+                    newStartTime = 0;
+                    newDuration = dragState.initialStartTime + dragState.initialDuration;
+                }
+
+                setTrimWidget((prev) => prev ? { ...prev, startTime: newStartTime, duration: newDuration } : null);
+            } else if (dragState.type === "resize-end") {
+                let newDuration = dragState.initialDuration + deltaSeconds;
+
+                // Constraint: duration >= 0.5s
+                if (newDuration < 0.5) newDuration = 0.5;
+                // Constrain to audio duration if needed
+                if (duration && trimWidget.startTime + newDuration > duration) {
+                    newDuration = duration - trimWidget.startTime;
+                }
+
+                setTrimWidget((prev) => prev ? { ...prev, duration: newDuration } : null);
+            }
+        };
+
+        const handleMouseUp = () => {
+            setDragState(null);
+        };
+
+        window.addEventListener("mousemove", handleMouseMove);
+        window.addEventListener("mouseup", handleMouseUp);
+
+        return () => {
+            window.removeEventListener("mousemove", handleMouseMove);
+            window.removeEventListener("mouseup", handleMouseUp);
+        };
+    }, [dragState, pxPerSecond, duration, trimWidget]);
 
     /* Dragging logic — uses global mouse events for smooth drag even outside the track */
     useEffect(() => {
@@ -240,8 +307,7 @@ export function Timeline() {
                                         size="sm"
                                         className="h-9 w-full justify-start gap-2 px-2 text-zinc-100 hover:bg-zinc-800 hover:text-white"
                                         onClick={() => {
-                                            // Placeholder for Trim action
-                                            console.log("Trim clicked");
+                                            setTrimWidget({ isVisible: true, startTime: currentTime, duration: 2 });
                                             setIsAddSegmentMenuOpen(false);
                                         }}
                                     >
@@ -334,6 +400,60 @@ export function Timeline() {
                                                 </span>
                                             </div>
                                         ))}
+                                    </div>
+                                )}
+
+                                {/* Trim Widget Overlay */}
+                                {hasVideo && trimWidget?.isVisible && (
+                                    <div
+                                        className="absolute inset-y-0 z-10 flex items-center justify-center rounded-md border-2 border-emerald-400 bg-emerald-200/50 backdrop-blur-sm cursor-move group"
+                                        style={{
+                                            left: `${trimWidget.startTime * pxPerSecond + 4}px`,
+                                            width: `${trimWidget.duration * pxPerSecond}px`,
+                                        }}
+                                        onMouseDown={(e) => {
+                                            e.stopPropagation();
+                                            setDragState({
+                                                type: "move",
+                                                startX: e.clientX,
+                                                initialStartTime: trimWidget.startTime,
+                                                initialDuration: trimWidget.duration,
+                                            });
+                                        }}
+                                    >
+                                        {/* Left Resize Handle */}
+                                        <div
+                                            className="absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize hover:bg-emerald-500/20 z-20"
+                                            onMouseDown={(e) => {
+                                                e.stopPropagation();
+                                                setDragState({
+                                                    type: "resize-start",
+                                                    startX: e.clientX,
+                                                    initialStartTime: trimWidget.startTime,
+                                                    initialDuration: trimWidget.duration,
+                                                });
+                                            }}
+                                        />
+
+                                        {/* Label */}
+                                        <div className="flex items-center gap-1.5 rounded bg-emerald-100/80 px-2 py-1 text-xs font-medium text-emerald-900 shadow-sm border border-emerald-500/20 pointer-events-none select-none">
+                                            <Scissors className="h-3 w-3" />
+                                            <span>Trim</span>
+                                        </div>
+
+                                        {/* Right Resize Handle */}
+                                        <div
+                                            className="absolute right-0 top-0 bottom-0 w-3 cursor-ew-resize hover:bg-emerald-500/20 z-20"
+                                            onMouseDown={(e) => {
+                                                e.stopPropagation();
+                                                setDragState({
+                                                    type: "resize-end",
+                                                    startX: e.clientX,
+                                                    initialStartTime: trimWidget.startTime,
+                                                    initialDuration: trimWidget.duration,
+                                                });
+                                            }}
+                                        />
                                     </div>
                                 )}
 
