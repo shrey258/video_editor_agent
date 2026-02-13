@@ -29,6 +29,8 @@ interface VideoState {
     trimStart: number;
     /** Trim-out point in seconds */
     trimEnd: number;
+    /** Multiple removed segments */
+    trimRanges: Array<{ start: number; end: number }>;
     /** Whether a video file has been loaded */
     hasVideo: boolean;
 }
@@ -44,6 +46,7 @@ interface VideoActions {
     setTrimStart: (t: number) => void;
     setTrimEnd: (t: number) => void;
     setTrimRange: (start: number, end: number) => void;
+    setTrimRanges: (ranges: Array<{ start: number; end: number }>) => void;
     requestFullscreen: () => void;
 }
 
@@ -52,6 +55,36 @@ type VideoContextValue = VideoState & VideoActions;
 const ACCEPTED_TYPES = ["video/mp4", "video/quicktime", "video/webm"];
 const SKIP_EPSILON_SEC = 0.05;
 const EXIT_EPSILON_SEC = 0.02;
+const MIN_TRIM_DURATION_SEC = 0.05;
+
+type TrimRange = { start: number; end: number };
+
+function normalizeTrimRanges(
+    ranges: TrimRange[],
+    clamp: (time: number) => number
+): TrimRange[] {
+    const normalized = ranges
+        .map((r) => ({
+            start: clamp(Math.min(r.start, r.end)),
+            end: clamp(Math.max(r.start, r.end)),
+        }))
+        .filter((r) => r.end - r.start > MIN_TRIM_DURATION_SEC)
+        .sort((a, b) => a.start - b.start);
+
+    if (normalized.length <= 1) return normalized;
+
+    const merged: TrimRange[] = [normalized[0]];
+    for (let i = 1; i < normalized.length; i += 1) {
+        const current = normalized[i];
+        const last = merged[merged.length - 1];
+        if (current.start <= last.end + MIN_TRIM_DURATION_SEC) {
+            last.end = Math.max(last.end, current.end);
+        } else {
+            merged.push(current);
+        }
+    }
+    return merged;
+}
 
 // ── Context ────────────────────────────────────────────────────────
 
@@ -76,9 +109,10 @@ export function VideoProvider({ children }: { children: ReactNode }) {
     const [volume, setVolumeState] = useState(80);
     const [trimStart, setTrimStartState] = useState(0);
     const [trimEnd, setTrimEndState] = useState(0);
+    const [trimRanges, setTrimRangesState] = useState<TrimRange[]>([]);
 
     const hasVideo = videoSrc !== null;
-    const hasTrimmedGap = trimEnd - trimStart > 0.05;
+    const hasTrimmedGap = trimRanges.length > 0;
 
     const clampToDuration = useCallback(
         (time: number) => {
@@ -92,13 +126,16 @@ export function VideoProvider({ children }: { children: ReactNode }) {
         (time: number) => {
             if (!hasTrimmedGap) return clampToDuration(time);
             const clamped = clampToDuration(time);
-            if (clamped <= trimStart || clamped >= trimEnd) return clamped;
-            const midpoint = (trimStart + trimEnd) / 2;
+            const containing = trimRanges.find(
+                (range) => clamped > range.start && clamped < range.end
+            );
+            if (!containing) return clamped;
+            const midpoint = (containing.start + containing.end) / 2;
             return clamped < midpoint
-                ? trimStart
-                : clampToDuration(trimEnd + EXIT_EPSILON_SEC);
+                ? containing.start
+                : clampToDuration(containing.end + EXIT_EPSILON_SEC);
         },
-        [clampToDuration, hasTrimmedGap, trimStart, trimEnd]
+        [clampToDuration, hasTrimmedGap, trimRanges]
     );
 
     // ── File loading ───────────────────────────────────────────────
@@ -115,6 +152,7 @@ export function VideoProvider({ children }: { children: ReactNode }) {
         setDuration(0);
         setTrimStartState(0);
         setTrimEndState(0);
+        setTrimRangesState([]);
     }, []);
 
     // ── Sync <video> element ───────────────────────────────────────
@@ -125,29 +163,27 @@ export function VideoProvider({ children }: { children: ReactNode }) {
 
         const enforceTrimSkip = () => {
             let nextTime = video.currentTime;
-            if (
-                hasTrimmedGap &&
-                nextTime >= trimStart - SKIP_EPSILON_SEC &&
-                nextTime < trimEnd - EXIT_EPSILON_SEC
-            ) {
-                // Nudge just past trimEnd to avoid boundary re-seek loops.
-                const target =
-                    duration <= 0
-                        ? Math.max(0, trimEnd + EXIT_EPSILON_SEC)
-                        : Math.max(0, Math.min(trimEnd + EXIT_EPSILON_SEC, duration));
-                video.currentTime = target;
-                nextTime = target;
+            if (hasTrimmedGap) {
+                const rangeToSkip = trimRanges.find(
+                    (range) =>
+                        nextTime >= range.start - SKIP_EPSILON_SEC &&
+                        nextTime < range.end - EXIT_EPSILON_SEC
+                );
+                if (rangeToSkip) {
+                    const target = clampToDuration(rangeToSkip.end + EXIT_EPSILON_SEC);
+                    video.currentTime = target;
+                    nextTime = target;
+                }
             }
             return nextTime;
         };
 
         const toDisplayTime = (time: number) => {
-            if (
-                hasTrimmedGap &&
-                time > trimEnd &&
-                time <= trimEnd + EXIT_EPSILON_SEC
-            ) {
-                return trimEnd;
+            if (hasTrimmedGap) {
+                const nearRangeEnd = trimRanges.find(
+                    (range) => time > range.end && time <= range.end + EXIT_EPSILON_SEC
+                );
+                if (nearRangeEnd) return nearRangeEnd.end;
             }
             return time;
         };
@@ -175,6 +211,7 @@ export function VideoProvider({ children }: { children: ReactNode }) {
             // Default: no cut region selected yet.
             setTrimStartState(0);
             setTrimEndState(0);
+            setTrimRangesState([]);
         };
         const onEnded = () => setIsPlaying(false);
         const onPlay = () => setIsPlaying(true);
@@ -194,7 +231,7 @@ export function VideoProvider({ children }: { children: ReactNode }) {
             video.removeEventListener("pause", onPause);
             if (rafId) cancelAnimationFrame(rafId);
         };
-    }, [videoSrc, isPlaying, hasTrimmedGap, trimStart, trimEnd, duration]);
+    }, [videoSrc, isPlaying, hasTrimmedGap, trimRanges, duration, clampToDuration]);
 
     // ── Sync volume ────────────────────────────────────────────────
 
@@ -219,12 +256,18 @@ export function VideoProvider({ children }: { children: ReactNode }) {
     const play = useCallback(() => {
         const video = videoRef.current;
         if (!video) return;
-        if (hasTrimmedGap && video.currentTime > trimStart && video.currentTime < trimEnd) {
-            video.currentTime = trimEnd;
-            setCurrentTime(trimEnd);
+        if (hasTrimmedGap) {
+            const range = trimRanges.find(
+                (r) => video.currentTime > r.start && video.currentTime < r.end
+            );
+            if (range) {
+                const next = clampToDuration(range.end + EXIT_EPSILON_SEC);
+                video.currentTime = next;
+                setCurrentTime(range.end);
+            }
         }
         void video.play();
-    }, [hasTrimmedGap, trimStart, trimEnd]);
+    }, [hasTrimmedGap, trimRanges, clampToDuration]);
 
     const pause = useCallback(() => {
         videoRef.current?.pause();
@@ -234,15 +277,21 @@ export function VideoProvider({ children }: { children: ReactNode }) {
         const video = videoRef.current;
         if (!video) return;
         if (video.paused) {
-            if (hasTrimmedGap && video.currentTime > trimStart && video.currentTime < trimEnd) {
-                video.currentTime = trimEnd;
-                setCurrentTime(trimEnd);
+            if (hasTrimmedGap) {
+                const range = trimRanges.find(
+                    (r) => video.currentTime > r.start && video.currentTime < r.end
+                );
+                if (range) {
+                    const next = clampToDuration(range.end + EXIT_EPSILON_SEC);
+                    video.currentTime = next;
+                    setCurrentTime(range.end);
+                }
             }
             void video.play();
         } else {
             video.pause();
         }
-    }, [hasTrimmedGap, trimStart, trimEnd]);
+    }, [hasTrimmedGap, trimRanges, clampToDuration]);
 
     const seek = useCallback((time: number) => {
         const video = videoRef.current;
@@ -263,15 +312,31 @@ export function VideoProvider({ children }: { children: ReactNode }) {
 
     const setTrimRange = useCallback(
         (start: number, end: number) => {
-            const boundedStart = clampToDuration(start);
-            const boundedEnd = clampToDuration(end);
-            if (boundedEnd - boundedStart <= 0.05) {
+            const normalized = normalizeTrimRanges([{ start, end }], clampToDuration);
+            if (normalized.length === 0) {
                 setTrimStartState(0);
                 setTrimEndState(0);
+                setTrimRangesState([]);
                 return;
             }
-            setTrimStartState(boundedStart);
-            setTrimEndState(boundedEnd);
+            setTrimStartState(normalized[0].start);
+            setTrimEndState(normalized[0].end);
+            setTrimRangesState(normalized);
+        },
+        [clampToDuration]
+    );
+
+    const setTrimRanges = useCallback(
+        (ranges: TrimRange[]) => {
+            const normalized = normalizeTrimRanges(ranges, clampToDuration);
+            setTrimRangesState(normalized);
+            if (normalized.length === 0) {
+                setTrimStartState(0);
+                setTrimEndState(0);
+            } else {
+                setTrimStartState(normalized[0].start);
+                setTrimEndState(normalized[0].end);
+            }
         },
         [clampToDuration]
     );
@@ -312,6 +377,7 @@ export function VideoProvider({ children }: { children: ReactNode }) {
         volume,
         trimStart,
         trimEnd,
+        trimRanges,
         hasVideo,
         loadFile,
         play,
@@ -323,6 +389,7 @@ export function VideoProvider({ children }: { children: ReactNode }) {
         setTrimStart,
         setTrimEnd,
         setTrimRange,
+        setTrimRanges,
         requestFullscreen,
     };
 

@@ -87,15 +87,17 @@ export function Timeline() {
         currentTime,
         hasVideo,
         seek,
-        setTrimRange,
+        setTrimRanges,
     } = useVideo();
 
     const [zoom, setZoom] = useState(1);
     const [isAddSegmentMenuOpen, setIsAddSegmentMenuOpen] = useState(false);
-    const [trimWidget, setTrimWidget] = useState<{ isVisible: boolean; startTime: number; duration: number } | null>(null);
+    const [trimWidgets, setTrimWidgets] = useState<Array<{ id: string; startTime: number; duration: number }>>([]);
+    const [activeTrimId, setActiveTrimId] = useState<string | null>(null);
     const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
     const [dragState, setDragState] = useState<{
         type: "move" | "resize-start" | "resize-end";
+        widgetId: string;
         startX: number;
         initialStartTime: number;
         initialDuration: number;
@@ -104,18 +106,17 @@ export function Timeline() {
     const trackRef = useRef<HTMLDivElement>(null);
     const hasMovedDuringDragRef = useRef(false);
     const suppressNextTrackClickRef = useRef(false);
-    const trimStart = trimWidget?.isVisible ? trimWidget.startTime : 0;
-    const trimEnd = trimWidget?.isVisible ? trimWidget.startTime + trimWidget.duration : 0;
 
-    const commitTrimWidgetToContext = useCallback(
-        (widget: { isVisible: boolean; startTime: number; duration: number } | null) => {
-            if (!widget?.isVisible) {
-                setTrimRange(0, 0);
-                return;
-            }
-            setTrimRange(widget.startTime, widget.startTime + widget.duration);
+    const commitTrimWidgetsToContext = useCallback(
+        (widgets: Array<{ id: string; startTime: number; duration: number }>) => {
+            setTrimRanges(
+                widgets.map((w) => ({
+                    start: w.startTime,
+                    end: w.startTime + w.duration,
+                }))
+            );
         },
-        [setTrimRange]
+        [setTrimRanges]
     );
 
     // Track container width so the timeline always fills the available space
@@ -157,7 +158,7 @@ export function Timeline() {
 
     /* Handle global mouse move/up for TRIM WIDGET dragging/resizing */
     useEffect(() => {
-        if (!dragState || !trimWidget) return;
+        if (!dragState) return;
 
         const handleMouseMove = (e: MouseEvent) => {
             const deltaX = e.clientX - dragState.startX;
@@ -175,7 +176,13 @@ export function Timeline() {
                     newStartTime = duration - dragState.initialDuration;
                 }
 
-                setTrimWidget((prev) => prev ? { ...prev, startTime: newStartTime } : null);
+                setTrimWidgets((prev) =>
+                    prev.map((widget) =>
+                        widget.id === dragState.widgetId
+                            ? { ...widget, startTime: newStartTime }
+                            : widget
+                    )
+                );
             } else if (dragState.type === "resize-start") {
                 let newStartTime = dragState.initialStartTime + deltaSeconds;
                 let newDuration = dragState.initialDuration - deltaSeconds;
@@ -190,18 +197,31 @@ export function Timeline() {
                     newDuration = dragState.initialStartTime + dragState.initialDuration;
                 }
 
-                setTrimWidget((prev) => prev ? { ...prev, startTime: newStartTime, duration: newDuration } : null);
+                setTrimWidgets((prev) =>
+                    prev.map((widget) =>
+                        widget.id === dragState.widgetId
+                            ? { ...widget, startTime: newStartTime, duration: newDuration }
+                            : widget
+                    )
+                );
             } else if (dragState.type === "resize-end") {
                 let newDuration = dragState.initialDuration + deltaSeconds;
 
                 // Constraint: duration >= 0.5s
                 if (newDuration < 0.5) newDuration = 0.5;
                 // Constrain to audio duration if needed
-                if (duration && trimWidget.startTime + newDuration > duration) {
-                    newDuration = duration - trimWidget.startTime;
+                const widget = trimWidgets.find((w) => w.id === dragState.widgetId);
+                if (widget && duration && widget.startTime + newDuration > duration) {
+                    newDuration = duration - widget.startTime;
                 }
 
-                setTrimWidget((prev) => prev ? { ...prev, duration: newDuration } : null);
+                setTrimWidgets((prev) =>
+                    prev.map((widgetItem) =>
+                        widgetItem.id === dragState.widgetId
+                            ? { ...widgetItem, duration: newDuration }
+                            : widgetItem
+                    )
+                );
             }
         };
 
@@ -210,7 +230,7 @@ export function Timeline() {
                 suppressNextTrackClickRef.current = true;
                 hasMovedDuringDragRef.current = false;
             }
-            commitTrimWidgetToContext(trimWidget);
+            commitTrimWidgetsToContext(trimWidgets);
             setDragState(null);
         };
 
@@ -221,7 +241,7 @@ export function Timeline() {
             window.removeEventListener("mousemove", handleMouseMove);
             window.removeEventListener("mouseup", handleMouseUp);
         };
-    }, [dragState, pxPerSecond, duration, trimWidget, commitTrimWidgetToContext]);
+    }, [dragState, pxPerSecond, duration, trimWidgets, commitTrimWidgetsToContext]);
 
     /* Dragging logic — uses global mouse events for smooth drag even outside the track */
     useEffect(() => {
@@ -292,18 +312,23 @@ export function Timeline() {
             case "Zoom out":
                 handleZoomOut();
                 break;
+            case "Delete":
+                if (!activeTrimId) break;
+                {
+                    const next = trimWidgets.filter((w) => w.id !== activeTrimId);
+                    setTrimWidgets(next);
+                    commitTrimWidgetsToContext(next);
+                }
+                setActiveTrimId(null);
+                break;
             case "Reset timeline":
                 setZoom(1);
-                setTrimRange(0, 0);
-                setTrimWidget(null);
+                setTrimWidgets([]);
+                setActiveTrimId(null);
+                setTrimRanges([]);
                 break;
         }
     }
-
-    useEffect(() => {
-        if (trimWidget) return;
-        setTrimRange(0, 0);
-    }, [trimWidget, setTrimRange]);
 
     return (
         <TooltipProvider delayDuration={200}>
@@ -326,9 +351,15 @@ export function Timeline() {
                                         onClick={() => {
                                             const startTime = Math.max(0, Math.min(currentTime, Math.max(0, effectiveDuration - 0.5)));
                                             const segmentDuration = Math.min(2, Math.max(0.5, effectiveDuration - startTime));
-                                            const nextWidget = { isVisible: true, startTime, duration: segmentDuration };
-                                            setTrimWidget(nextWidget);
-                                            commitTrimWidgetToContext(nextWidget);
+                                            const nextWidget = {
+                                                id: crypto.randomUUID(),
+                                                startTime,
+                                                duration: segmentDuration,
+                                            };
+                                            const next = [...trimWidgets, nextWidget];
+                                            setTrimWidgets(next);
+                                            commitTrimWidgetsToContext(next);
+                                            setActiveTrimId(nextWidget.id);
                                             setIsAddSegmentMenuOpen(false);
                                         }}
                                     >
@@ -424,73 +455,86 @@ export function Timeline() {
                                     </div>
                                 )}
 
-                                {/* Trim Widget Overlay */}
-                                {hasVideo && trimWidget?.isVisible && (
-                                    <div
-                                        className="absolute inset-y-0 z-10 flex items-center justify-center rounded-md border-2 border-emerald-400 bg-emerald-200/50 backdrop-blur-sm cursor-move group"
-                                        style={{
-                                            left: `${trimWidget.startTime * pxPerSecond + 4}px`,
-                                            width: `${trimWidget.duration * pxPerSecond}px`,
-                                        }}
-                                        onMouseDown={(e) => {
-                                            e.stopPropagation();
-                                            hasMovedDuringDragRef.current = false;
-                                            setDragState({
-                                                type: "move",
-                                                startX: e.clientX,
-                                                initialStartTime: trimWidget.startTime,
-                                                initialDuration: trimWidget.duration,
-                                            });
-                                        }}
-                                    >
-                                        {/* Left Resize Handle */}
+                                {/* Removed segment masks (non-playable in preview) */}
+                                {hasVideo &&
+                                    trimWidgets.map((widget) => (
                                         <div
-                                            className="absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize hover:bg-emerald-500/20 z-20"
-                                            onMouseDown={(e) => {
-                                                e.stopPropagation();
-                                                hasMovedDuringDragRef.current = false;
-                                                setDragState({
-                                                    type: "resize-start",
-                                                    startX: e.clientX,
-                                                    initialStartTime: trimWidget.startTime,
-                                                    initialDuration: trimWidget.duration,
-                                                });
+                                            key={`mask-${widget.id}`}
+                                            className="absolute inset-y-0 z-[9] rounded-md border border-red-400/50 bg-red-500/20"
+                                            style={{
+                                                left: `${widget.startTime * pxPerSecond + 4}px`,
+                                                width: `${widget.duration * pxPerSecond}px`,
                                             }}
                                         />
+                                    ))}
 
-                                        {/* Label */}
-                                        <div className="flex items-center gap-1.5 rounded bg-emerald-100/80 px-2 py-1 text-xs font-medium text-emerald-900 shadow-sm border border-emerald-500/20 pointer-events-none select-none">
-                                            <Scissors className="h-3 w-3" />
-                                            <span>Trim</span>
-                                        </div>
+                                {/* Trim Widget Overlays */}
+                                {hasVideo &&
+                                    trimWidgets.map((widget) => {
+                                        const isActive = widget.id === activeTrimId;
+                                        return (
+                                            <div
+                                                key={widget.id}
+                                                className={`absolute inset-y-0 z-10 flex items-center justify-center rounded-md border-2 bg-emerald-200/50 backdrop-blur-sm cursor-move group ${isActive ? "border-emerald-300" : "border-emerald-500/70"}`}
+                                                style={{
+                                                    left: `${widget.startTime * pxPerSecond + 4}px`,
+                                                    width: `${widget.duration * pxPerSecond}px`,
+                                                }}
+                                                onMouseDown={(e) => {
+                                                    e.stopPropagation();
+                                                    hasMovedDuringDragRef.current = false;
+                                                    setActiveTrimId(widget.id);
+                                                    setDragState({
+                                                        type: "move",
+                                                        widgetId: widget.id,
+                                                        startX: e.clientX,
+                                                        initialStartTime: widget.startTime,
+                                                        initialDuration: widget.duration,
+                                                    });
+                                                }}
+                                            >
+                                                {/* Left Resize Handle */}
+                                                <div
+                                                    className="absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize hover:bg-emerald-500/20 z-20"
+                                                    onMouseDown={(e) => {
+                                                        e.stopPropagation();
+                                                        hasMovedDuringDragRef.current = false;
+                                                        setActiveTrimId(widget.id);
+                                                        setDragState({
+                                                            type: "resize-start",
+                                                            widgetId: widget.id,
+                                                            startX: e.clientX,
+                                                            initialStartTime: widget.startTime,
+                                                            initialDuration: widget.duration,
+                                                        });
+                                                    }}
+                                                />
 
-                                        {/* Right Resize Handle */}
-                                        <div
-                                            className="absolute right-0 top-0 bottom-0 w-3 cursor-ew-resize hover:bg-emerald-500/20 z-20"
-                                            onMouseDown={(e) => {
-                                                e.stopPropagation();
-                                                hasMovedDuringDragRef.current = false;
-                                                setDragState({
-                                                    type: "resize-end",
-                                                    startX: e.clientX,
-                                                    initialStartTime: trimWidget.startTime,
-                                                    initialDuration: trimWidget.duration,
-                                                });
-                                            }}
-                                        />
-                                    </div>
-                                )}
+                                                {/* Label */}
+                                                <div className="flex items-center gap-1.5 rounded bg-emerald-100/80 px-2 py-1 text-xs font-medium text-emerald-900 shadow-sm border border-emerald-500/20 pointer-events-none select-none">
+                                                    <Scissors className="h-3 w-3" />
+                                                    <span>Trim {trimWidgets.findIndex((w) => w.id === widget.id) + 1}</span>
+                                                </div>
 
-                                {/* Removed segment mask (non-playable in preview) */}
-                                {hasVideo && trimEnd - trimStart > 0.05 && (
-                                    <div
-                                        className="absolute inset-y-0 z-[9] rounded-md border border-red-400/50 bg-red-500/20"
-                                        style={{
-                                            left: `${trimStart * pxPerSecond + 4}px`,
-                                            width: `${(trimEnd - trimStart) * pxPerSecond}px`,
-                                        }}
-                                    />
-                                )}
+                                                {/* Right Resize Handle */}
+                                                <div
+                                                    className="absolute right-0 top-0 bottom-0 w-3 cursor-ew-resize hover:bg-emerald-500/20 z-20"
+                                                    onMouseDown={(e) => {
+                                                        e.stopPropagation();
+                                                        hasMovedDuringDragRef.current = false;
+                                                        setActiveTrimId(widget.id);
+                                                        setDragState({
+                                                            type: "resize-end",
+                                                            widgetId: widget.id,
+                                                            startX: e.clientX,
+                                                            initialStartTime: widget.startTime,
+                                                            initialDuration: widget.duration,
+                                                        });
+                                                    }}
+                                                />
+                                            </div>
+                                        );
+                                    })}
 
                                 {/* Playhead - Centered and visible */}
                                 {hasVideo && (
