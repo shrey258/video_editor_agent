@@ -349,7 +349,9 @@ export function Timeline() {
                             {hasVideo && (
                                 <div
                                     className="absolute top-0 bottom-0 z-20 flex flex-col items-center"
-                                    style={{ left: `${currentTime * pxPerSecond + 24}px` }}
+                                    style={{ left: `${currentTime * pxPerSecond + 24}px`,
+                                    transition: isDraggingPlayhead ? "none" : "left 0.3s linear",
+                                }}
                                 >
                                     {/* Head triangle */}
                                     <div
