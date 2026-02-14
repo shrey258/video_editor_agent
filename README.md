@@ -59,6 +59,24 @@ Open [http://localhost:3000](http://localhost:3000).
   - fields: `prompt`, `duration_sec`, `sprite_interval_sec`, `total_frames`, `sheets_count`
   - returns cut suggestions `{start_sec,end_sec,reason,confidence}` for timeline application
 
+## Tests
+
+### Backend
+
+```bash
+cd backend
+pytest -q
+```
+
+### Frontend
+
+```bash
+cd frontend
+npm run test
+```
+
+CI runs backend tests and frontend lint/test/build on push and PR.
+
 ## Notes
 
 - v0 supports one action: `trim_video` with two operations:

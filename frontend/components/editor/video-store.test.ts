@@ -1,0 +1,53 @@
+import { describe, expect, it } from "vitest";
+
+import { useVideoStore } from "./video-store";
+
+function resetStore() {
+  const state = useVideoStore.getState();
+  state.setDuration(10);
+  state.setCurrentTime(0);
+  state.setIsPlaying(false);
+  state.setTrimRanges([]);
+  state.videoRef.current = null;
+}
+
+describe("video-store", () => {
+  it("merges overlapping and adjacent trim ranges", () => {
+    resetStore();
+    const state = useVideoStore.getState();
+    state.setTrimRanges([
+      { start: 1, end: 3 },
+      { start: 2.98, end: 4 },
+      { start: 8, end: 12 },
+    ]);
+
+    const ranges = useVideoStore.getState().trimRanges;
+    expect(ranges).toHaveLength(2);
+    expect(ranges[0].start).toBeCloseTo(1, 2);
+    expect(ranges[0].end).toBeCloseTo(4, 2);
+    expect(ranges[1].start).toBeCloseTo(8, 2);
+    expect(ranges[1].end).toBeCloseTo(10, 2);
+  });
+
+  it("seek snaps outside trimmed gap using nearest boundary behavior", () => {
+    resetStore();
+    const state = useVideoStore.getState();
+    const video = {
+      currentTime: 0,
+      paused: true,
+      play: () => Promise.resolve(),
+      pause: () => undefined,
+      requestFullscreen: () => Promise.resolve(),
+      volume: 1,
+      muted: false,
+    };
+    state.videoRef.current = video as unknown as HTMLVideoElement;
+    state.setTrimRanges([{ start: 2, end: 4 }]);
+
+    state.seek(2.2);
+    expect(video.currentTime).toBeCloseTo(2, 2);
+
+    state.seek(3.8);
+    expect(video.currentTime).toBeGreaterThan(4);
+  });
+});
