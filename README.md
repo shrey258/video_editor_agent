@@ -119,3 +119,4 @@ CI runs backend tests and frontend lint/test/build on push and PR.
   - `extract_range` (for "keep only X to Y"): outputs only X-Y clip
 - Session state is in-memory, resets when backend restarts
 - This is intentionally lean for demo/showcase use
+- Sprite generation is non-persistent by default (`SPRITE_PERSIST=false`): files are created temporarily and cleaned up immediately.

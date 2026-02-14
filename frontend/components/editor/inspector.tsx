@@ -371,23 +371,32 @@ export function Inspector() {
                             <p className="text-xs text-zinc-400">
                                 Sprites: {spriteData.sheets.length} sheets, {spriteData.total_frames} frames
                             </p>
-                            <div className="mt-2 space-y-2">
-                                {spriteData.sheets.slice(0, 2).map((sheet) => (
-                                    <div key={sheet.sheet_index} className="space-y-1">
-                                        <Image
-                                            src={sheet.image_url}
-                                            alt={`Sprite sheet ${sheet.sheet_index}`}
-                                            width={sheet.image_width}
-                                            height={sheet.image_height}
-                                            unoptimized
-                                            className="w-full rounded border border-zinc-700"
-                                        />
-                                        <p className="text-[11px] text-zinc-500">
-                                            Sheet {sheet.sheet_index}: {sheet.start_time_sec}s to {sheet.end_time_sec}s
-                                        </p>
-                                    </div>
-                                ))}
-                            </div>
+                            {spriteData.sheets.some((sheet) => sheet.image_url) ? (
+                                <div className="mt-2 space-y-2">
+                                    {spriteData.sheets
+                                        .filter((sheet) => Boolean(sheet.image_url))
+                                        .slice(0, 2)
+                                        .map((sheet) => (
+                                            <div key={sheet.sheet_index} className="space-y-1">
+                                                <Image
+                                                    src={sheet.image_url}
+                                                    alt={`Sprite sheet ${sheet.sheet_index}`}
+                                                    width={sheet.image_width}
+                                                    height={sheet.image_height}
+                                                    unoptimized
+                                                    className="w-full rounded border border-zinc-700"
+                                                />
+                                                <p className="text-[11px] text-zinc-500">
+                                                    Sheet {sheet.sheet_index}: {sheet.start_time_sec}s to {sheet.end_time_sec}s
+                                                </p>
+                                            </div>
+                                        ))}
+                                </div>
+                            ) : (
+                                <p className="mt-2 text-[11px] text-zinc-500">
+                                    Sprite files are temporary and not persisted in this environment.
+                                </p>
+                            )}
                         </div>
                     ) : null}
                     {tokenEstimate ? (

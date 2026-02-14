@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Dict
 from uuid import uuid4
@@ -40,10 +41,9 @@ from .video_tools import (
     remove_segment_and_stitch,
 )
 
-ROOT = Path(__file__).resolve().parents[2]
-load_dotenv(ROOT / ".env")
-load_dotenv(ROOT / "backend" / ".env")
-MEDIA_ROOT = (ROOT / os.getenv("MEDIA_ROOT", "media")).resolve()
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(BACKEND_ROOT / ".env")
+MEDIA_ROOT = (BACKEND_ROOT / os.getenv("MEDIA_ROOT", "media")).resolve()
 UPLOAD_DIR = MEDIA_ROOT / "uploads"
 OUTPUT_DIR = MEDIA_ROOT / "outputs"
 SPRITES_DIR = MEDIA_ROOT / "sprites"
@@ -185,37 +185,65 @@ async def analyze_sprites(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     upload_path = await save_upload_file(file=file, upload_dir=UPLOAD_DIR)
-
+    persist_sprites = os.getenv("SPRITE_PERSIST", "false").strip().lower() == "true"
     sprite_job_id = str(uuid4())
-    sprite_output_dir = SPRITES_DIR / sprite_job_id
 
     try:
-        analysis = generate_sprite_sheets(
-            input_path=upload_path,
-            output_dir=sprite_output_dir,
-            interval_sec=interval_sec,
-            columns=columns,
-            rows=rows,
-            thumb_width=thumb_width,
-        )
+        if persist_sprites:
+            sprite_output_dir = SPRITES_DIR / sprite_job_id
+            analysis = generate_sprite_sheets(
+                input_path=upload_path,
+                output_dir=sprite_output_dir,
+                interval_sec=interval_sec,
+                columns=columns,
+                rows=rows,
+                thumb_width=thumb_width,
+            )
+            sheets = []
+            for sheet in analysis["sheets"]:
+                sheets.append(
+                    {
+                        "sheet_index": sheet["sheet_index"],
+                        "image_url": f"/media/sprites/{sprite_job_id}/{sheet['image_name']}",
+                        "image_width": sheet["image_width"],
+                        "image_height": sheet["image_height"],
+                        "tile_width": sheet["tile_width"],
+                        "tile_height": sheet["tile_height"],
+                        "start_time_sec": sheet["start_time_sec"],
+                        "end_time_sec": sheet["end_time_sec"],
+                        "frames": sheet["frames"],
+                    }
+                )
+        else:
+            with tempfile.TemporaryDirectory(prefix="sprite_job_") as temp_dir:
+                analysis = generate_sprite_sheets(
+                    input_path=upload_path,
+                    output_dir=Path(temp_dir),
+                    interval_sec=interval_sec,
+                    columns=columns,
+                    rows=rows,
+                    thumb_width=thumb_width,
+                )
+            # No persisted files in non-persistent mode.
+            sheets = []
+            for sheet in analysis["sheets"]:
+                sheets.append(
+                    {
+                        "sheet_index": sheet["sheet_index"],
+                        "image_url": "",
+                        "image_width": sheet["image_width"],
+                        "image_height": sheet["image_height"],
+                        "tile_width": sheet["tile_width"],
+                        "tile_height": sheet["tile_height"],
+                        "start_time_sec": sheet["start_time_sec"],
+                        "end_time_sec": sheet["end_time_sec"],
+                        "frames": sheet["frames"],
+                    }
+                )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Sprite analysis failed: {exc}") from exc
-
-    sheets = []
-    for sheet in analysis["sheets"]:
-        sheets.append(
-            {
-                "sheet_index": sheet["sheet_index"],
-                "image_url": f"/media/sprites/{sprite_job_id}/{sheet['image_name']}",
-                "image_width": sheet["image_width"],
-                "image_height": sheet["image_height"],
-                "tile_width": sheet["tile_width"],
-                "tile_height": sheet["tile_height"],
-                "start_time_sec": sheet["start_time_sec"],
-                "end_time_sec": sheet["end_time_sec"],
-                "frames": sheet["frames"],
-            }
-        )
+    finally:
+        upload_path.unlink(missing_ok=True)
 
     return SpriteAnalysisResponse(
         duration_sec=analysis["duration_sec"],
@@ -253,17 +281,20 @@ async def analyze_token_estimate_from_file(
     save_path = await save_upload_file(file=file, upload_dir=UPLOAD_DIR)
 
     try:
-        duration_sec = probe_duration_or_cleanup(save_path)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            duration_sec = probe_duration_or_cleanup(save_path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return estimate_tokens(
-        duration_sec=duration_sec,
-        interval_sec=interval_sec,
-        columns=columns,
-        rows=rows,
-        thumb_width=thumb_width,
-    )
+        return estimate_tokens(
+            duration_sec=duration_sec,
+            interval_sec=interval_sec,
+            columns=columns,
+            rows=rows,
+            thumb_width=thumb_width,
+        )
+    finally:
+        save_path.unlink(missing_ok=True)
 
 
 @app.post("/ai/suggest-cuts-from-sprites", response_model=SuggestCutsResponse)
@@ -336,27 +367,30 @@ async def export_from_file(
             raise HTTPException(status_code=400, detail="Cannot remove the entire video range.")
 
     try:
-        if merged_ranges:
-            output_path = remove_segments_and_stitch(
-                input_path=input_path,
-                output_dir=OUTPUT_DIR,
-                duration_sec=duration_sec,
-                trim_ranges=merged_ranges,
-            )
-        else:
-            # No trims: produce a normal export copy by re-encoding the full source range.
-            output_path = extract_range(
-                input_path=input_path,
-                output_dir=OUTPUT_DIR,
-                start_sec=0.0,
-                end_sec=duration_sec,
-            )
-        # Sanity check output can be probed.
-        _ = get_duration_sec(output_path)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Export failed: {exc}") from exc
+        try:
+            if merged_ranges:
+                output_path = remove_segments_and_stitch(
+                    input_path=input_path,
+                    output_dir=OUTPUT_DIR,
+                    duration_sec=duration_sec,
+                    trim_ranges=merged_ranges,
+                )
+            else:
+                # No trims: produce a normal export copy by re-encoding the full source range.
+                output_path = extract_range(
+                    input_path=input_path,
+                    output_dir=OUTPUT_DIR,
+                    start_sec=0.0,
+                    end_sec=duration_sec,
+                )
+            # Sanity check output can be probed.
+            _ = get_duration_sec(output_path)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Export failed: {exc}") from exc
+    finally:
+        input_path.unlink(missing_ok=True)
 
     return ExportResponse(
         output_url=f"/media/outputs/{output_path.name}",

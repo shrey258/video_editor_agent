@@ -16,6 +16,8 @@ frontend/.env.local
 # Media outputs
 media/uploads
 media/outputs
+media/sprites
+backend/media/
 
 # OS
 .DS_Store
