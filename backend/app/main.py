@@ -52,10 +52,25 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 SPRITES_DIR.mkdir(parents=True, exist_ok=True)
 
+
+def _allowed_origins() -> list[str]:
+    origins = {"http://localhost:3000", "http://127.0.0.1:3000"}
+    env_origins = os.getenv("CORS_ORIGINS", "")
+    if env_origins.strip():
+        for origin in env_origins.split(","):
+            cleaned = origin.strip().rstrip("/")
+            if cleaned:
+                origins.add(cleaned)
+    vercel_frontend_url = os.getenv("VERCEL_FRONTEND_URL", "").strip().rstrip("/")
+    if vercel_frontend_url:
+        origins.add(vercel_frontend_url)
+    return sorted(origins)
+
+
 app = FastAPI(title="Video Editor Agent API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

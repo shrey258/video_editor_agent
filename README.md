@@ -41,6 +41,41 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+## Deploy
+
+### Backend on Fly.io
+
+1. Install Fly CLI and login:
+```bash
+fly auth login
+```
+2. Create app (first time only):
+```bash
+cd backend
+fly launch --no-deploy --copy-config
+```
+3. Set secrets/env:
+```bash
+fly secrets set GEMINI_API_KEY=your_key
+fly secrets set CORS_ORIGINS=https://your-frontend.vercel.app
+fly secrets set VERCEL_FRONTEND_URL=https://your-frontend.vercel.app
+```
+4. Deploy:
+```bash
+fly deploy -c fly.toml
+```
+
+### Frontend on Vercel
+
+1. Import `frontend/` as a Vercel project.
+2. Set environment variable in Vercel:
+```bash
+NEXT_PUBLIC_API_BASE=https://your-fly-backend.fly.dev
+```
+3. Deploy.
+
+The frontend already rewrites `/api/*` and `/media/*` to `NEXT_PUBLIC_API_BASE`.
+
 ## API endpoints
 
 - `GET /health`
