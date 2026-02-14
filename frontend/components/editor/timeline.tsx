@@ -122,6 +122,8 @@ export function Timeline() {
     } | null>(null);
     const [containerWidth, setContainerWidth] = useState(0);
     const trackRef = useRef<HTMLDivElement>(null);
+    const trimWidgetsRef = useRef<TrimWidget[]>([]);
+    const activeTrimIdRef = useRef<string | null>(null);
     const hasMovedDuringDragRef = useRef(false);
     const suppressNextTrackClickRef = useRef(false);
     const isLocalEditRef = useRef(false);
@@ -140,21 +142,29 @@ export function Timeline() {
     );
 
     useEffect(() => {
+        trimWidgetsRef.current = trimWidgets;
+    }, [trimWidgets]);
+
+    useEffect(() => {
+        activeTrimIdRef.current = activeTrimId;
+    }, [activeTrimId]);
+
+    useEffect(() => {
         if (isLocalEditRef.current) {
             isLocalEditRef.current = false;
             return;
         }
-        if (areRangesEquivalent(trimWidgets, trimRanges)) return;
+        if (areRangesEquivalent(trimWidgetsRef.current, trimRanges)) return;
         const nextWidgets: TrimWidget[] = trimRanges.map((range) => ({
             id: crypto.randomUUID(),
             startTime: range.start,
             duration: Math.max(0.05, range.end - range.start),
         }));
         setTrimWidgets(nextWidgets);
-        if (!nextWidgets.some((w) => w.id === activeTrimId)) {
+        if (!nextWidgets.some((w) => w.id === activeTrimIdRef.current)) {
             setActiveTrimId(nextWidgets[0]?.id ?? null);
         }
-    }, [trimRanges, trimWidgets, activeTrimId]);
+    }, [trimRanges]);
 
     // Track container width so the timeline always fills the available space
     useEffect(() => {
@@ -242,22 +252,18 @@ export function Timeline() {
                     )
                 );
             } else if (dragState.type === "resize-end") {
-                let newDuration = dragState.initialDuration + deltaSeconds;
-
-                // Constraint: duration >= 0.5s
-                if (newDuration < 0.5) newDuration = 0.5;
-                // Constrain to audio duration if needed
-                const widget = trimWidgets.find((w) => w.id === dragState.widgetId);
-                if (widget && duration && widget.startTime + newDuration > duration) {
-                    newDuration = duration - widget.startTime;
-                }
-
                 setTrimWidgets((prev) =>
-                    prev.map((widgetItem) =>
-                        widgetItem.id === dragState.widgetId
-                            ? { ...widgetItem, duration: newDuration }
-                            : widgetItem
-                    )
+                    prev.map((widgetItem) => {
+                        if (widgetItem.id !== dragState.widgetId) return widgetItem;
+                        let newDuration = dragState.initialDuration + deltaSeconds;
+                        // Constraint: duration >= 0.5s
+                        if (newDuration < 0.5) newDuration = 0.5;
+                        // Constrain to video duration if needed
+                        if (duration && widgetItem.startTime + newDuration > duration) {
+                            newDuration = duration - widgetItem.startTime;
+                        }
+                        return { ...widgetItem, duration: newDuration };
+                    })
                 );
             }
         };
@@ -267,7 +273,7 @@ export function Timeline() {
                 suppressNextTrackClickRef.current = true;
                 hasMovedDuringDragRef.current = false;
             }
-            commitTrimWidgetsToContext(trimWidgets);
+            commitTrimWidgetsToContext(trimWidgetsRef.current);
             setDragState(null);
         };
 
@@ -278,7 +284,7 @@ export function Timeline() {
             window.removeEventListener("mousemove", handleMouseMove);
             window.removeEventListener("mouseup", handleMouseUp);
         };
-    }, [dragState, pxPerSecond, duration, trimWidgets, commitTrimWidgetsToContext]);
+    }, [dragState, pxPerSecond, duration, commitTrimWidgetsToContext]);
 
     /* Dragging logic — uses global mouse events for smooth drag even outside the track */
     useEffect(() => {
