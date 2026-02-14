@@ -15,6 +15,8 @@ import {
 interface VideoState {
     /** Object URL of the loaded video, or null */
     videoSrc: string | null;
+    /** Original file used for analysis/export requests */
+    sourceFile: File | null;
     /** Ref to the underlying <video> element */
     videoRef: React.RefObject<HTMLVideoElement | null>;
     /** Duration of the loaded video in seconds (0 until metadata loads) */
@@ -102,6 +104,7 @@ export function VideoProvider({ children }: { children: ReactNode }) {
     const videoRef = useRef<HTMLVideoElement | null>(null);
 
     const [videoSrc, setVideoSrc] = useState<string | null>(null);
+    const [sourceFile, setSourceFile] = useState<File | null>(null);
     const [duration, setDuration] = useState(0);
     const [currentTime, setCurrentTime] = useState(0);
     const [isPlaying, setIsPlaying] = useState(false);
@@ -147,6 +150,7 @@ export function VideoProvider({ children }: { children: ReactNode }) {
             if (prev) URL.revokeObjectURL(prev);
             return URL.createObjectURL(file);
         });
+        setSourceFile(file);
         setIsPlaying(false);
         setCurrentTime(0);
         setDuration(0);
@@ -369,6 +373,7 @@ export function VideoProvider({ children }: { children: ReactNode }) {
 
     const value: VideoContextValue = {
         videoSrc,
+        sourceFile,
         videoRef,
         duration,
         currentTime,

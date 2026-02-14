@@ -46,6 +46,15 @@ Open [http://localhost:3000](http://localhost:3000).
 - `GET /health`
 - `POST /upload` (`multipart/form-data`, field `file`)
 - `POST /edit-request` (`{ "video_id": "...", "prompt": "trim from 00:12 to 00:47" }`)
+- `POST /analyze/sprites` (`multipart/form-data`)
+  - fields: `file`, optional `interval_sec`, `columns`, `rows`, `thumb_width`
+  - returns sprite sheet URLs + per-tile timestamp mapping for AI planning
+- `POST /analyze/token-estimate` (`application/json`)
+  - fields: `duration_sec`, optional `interval_sec`, `columns`, `rows`, `thumb_width`
+  - returns estimated token usage for sprite-sheet approach vs direct video upload
+- `POST /analyze/token-estimate-from-file` (`multipart/form-data`)
+  - fields: `file`, optional `interval_sec`, `columns`, `rows`, `thumb_width`
+  - same estimate, with backend deriving duration from uploaded file
 
 ## Notes
 
