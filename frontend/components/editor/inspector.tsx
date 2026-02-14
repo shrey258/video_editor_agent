@@ -67,9 +67,10 @@ const PLACEHOLDER_MESSAGES: ChatMessage[] = [
             "Hey! I'm your AI video editor. Upload a video and tell me what edits you'd like — trim, cut, extract a clip, and more.",
     },
 ];
+const MAX_VIDEO_DURATION_SEC = 10;
 
 export function Inspector() {
-    const { sourceFile, trimRanges, setTrimRanges } = useVideo();
+    const { sourceFile, duration, trimRanges, setTrimRanges } = useVideo();
     const [messages, setMessages] = useState<ChatMessage[]>(PLACEHOLDER_MESSAGES);
     const [input, setInput] = useState("");
     const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -81,6 +82,9 @@ export function Inspector() {
     const [isExporting, setIsExporting] = useState(false);
     const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const isVideoTooLong = duration > MAX_VIDEO_DURATION_SEC;
+    const durationLabel =
+        Number.isFinite(duration) && duration > 0 ? `${duration.toFixed(2)}s` : "unknown";
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -88,6 +92,17 @@ export function Inspector() {
 
     async function handleSend() {
         if (!input.trim()) return;
+        if (isVideoTooLong) {
+            setMessages((prev) => [
+                ...prev,
+                {
+                    id: Date.now().toString(),
+                    role: "assistant",
+                    content: `AI tools are limited to videos up to ${MAX_VIDEO_DURATION_SEC}s. Current video: ${durationLabel}.`,
+                },
+            ]);
+            return;
+        }
         const userMsg: ChatMessage = {
             id: Date.now().toString(),
             role: "user",
@@ -161,13 +176,13 @@ export function Inspector() {
     }
 
     async function handleGenerateSprites() {
-        if (!sourceFile || isAnalyzing) return;
+        if (!sourceFile || isAnalyzing || isVideoTooLong) return;
         setIsAnalyzing(true);
         setSpriteData(null);
 
         const form = new FormData();
         form.append("file", sourceFile);
-        form.append("interval_sec", "1.0");
+        form.append("interval_sec", "0.25");
         form.append("columns", "8");
         form.append("rows", "8");
         form.append("thumb_width", "256");
@@ -211,12 +226,12 @@ export function Inspector() {
     }
 
     async function handleEstimateTokens() {
-        if (!sourceFile || isEstimating) return;
+        if (!sourceFile || isEstimating || isVideoTooLong) return;
         setIsEstimating(true);
 
         const form = new FormData();
         form.append("file", sourceFile);
-        form.append("interval_sec", "1.0");
+        form.append("interval_sec", "0.25");
         form.append("columns", "8");
         form.append("rows", "8");
         form.append("thumb_width", "256");
@@ -251,7 +266,7 @@ export function Inspector() {
     }
 
     async function handleExportVideo() {
-        if (!sourceFile || isExporting) return;
+        if (!sourceFile || isExporting || isVideoTooLong) return;
         setIsExporting(true);
         setExportResult(null);
 
@@ -318,7 +333,7 @@ export function Inspector() {
                 <Button
                     className="w-full bg-emerald-600 font-semibold text-white hover:bg-emerald-500"
                     onClick={handleExportVideo}
-                    disabled={!sourceFile || isExporting}
+                    disabled={!sourceFile || isExporting || isVideoTooLong}
                 >
                     <Download className="mr-2 h-4 w-4" />
                     {isExporting ? "Exporting..." : "Export Video"}
@@ -337,7 +352,7 @@ export function Inspector() {
                     variant="secondary"
                     className="mt-2 w-full"
                     onClick={handleGenerateSprites}
-                    disabled={!sourceFile || isAnalyzing}
+                    disabled={!sourceFile || isAnalyzing || isVideoTooLong}
                 >
                     <Film className="mr-2 h-4 w-4" />
                     {isAnalyzing ? "Generating Sprites..." : "Generate Sprites"}
@@ -346,11 +361,16 @@ export function Inspector() {
                     variant="secondary"
                     className="mt-2 w-full"
                     onClick={handleEstimateTokens}
-                    disabled={!sourceFile || isEstimating}
+                    disabled={!sourceFile || isEstimating || isVideoTooLong}
                 >
                     <Sigma className="mr-2 h-4 w-4" />
                     {isEstimating ? "Estimating Tokens..." : "Estimate Tokens"}
                 </Button>
+                {isVideoTooLong ? (
+                    <p className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-300">
+                        AI/Export is limited to {MAX_VIDEO_DURATION_SEC}s max. Current: {durationLabel}.
+                    </p>
+                ) : null}
             </div>
 
             <Separator className="bg-zinc-800" />
@@ -493,7 +513,7 @@ export function Inspector() {
                         variant="ghost"
                         size="icon"
                         onClick={handleSend}
-                        disabled={!input.trim() || isSuggesting}
+                        disabled={!input.trim() || isSuggesting || isVideoTooLong}
                         className="h-7 w-7 shrink-0 text-primary hover:bg-primary/20 hover:text-primary disabled:text-zinc-600"
                     >
                         <Send className="h-4 w-4" />

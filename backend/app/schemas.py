@@ -57,7 +57,7 @@ class SpriteAnalysisResponse(BaseModel):
 
 class TokenEstimateRequest(BaseModel):
     duration_sec: float = Field(gt=0)
-    interval_sec: float = Field(default=1.0, gt=0)
+    interval_sec: float = Field(default=0.25, gt=0)
     columns: int = Field(default=8, gt=0)
     rows: int = Field(default=8, gt=0)
     thumb_width: int = Field(default=256, ge=64)

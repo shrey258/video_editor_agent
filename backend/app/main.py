@@ -44,6 +44,7 @@ from .video_tools import (
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(BACKEND_ROOT / ".env")
 MEDIA_ROOT = (BACKEND_ROOT / os.getenv("MEDIA_ROOT", "media")).resolve()
+MAX_VIDEO_DURATION_SEC = float(os.getenv("MAX_VIDEO_DURATION_SEC", "10"))
 UPLOAD_DIR = MEDIA_ROOT / "uploads"
 OUTPUT_DIR = MEDIA_ROOT / "outputs"
 SPRITES_DIR = MEDIA_ROOT / "sprites"
@@ -65,6 +66,17 @@ def _allowed_origins() -> list[str]:
     if vercel_frontend_url:
         origins.add(vercel_frontend_url)
     return sorted(origins)
+
+
+def _enforce_max_duration(duration_sec: float) -> None:
+    if duration_sec > MAX_VIDEO_DURATION_SEC:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Video duration {duration_sec:.2f}s exceeds maximum "
+                f"{MAX_VIDEO_DURATION_SEC:.2f}s."
+            ),
+        )
 
 
 app = FastAPI(title="Video Editor Agent API", version="0.1.0")
@@ -102,6 +114,7 @@ async def upload_video(file: UploadFile = File(...)) -> UploadResponse:
         duration = probe_duration_or_cleanup(save_path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _enforce_max_duration(duration)
 
     video_id = str(uuid4())
     filename = save_path.name
@@ -175,7 +188,7 @@ async def edit_request(payload: EditRequest) -> EditResponse:
 @app.post("/analyze/sprites", response_model=SpriteAnalysisResponse)
 async def analyze_sprites(
     file: UploadFile = File(...),
-    interval_sec: float = Form(1.0),
+    interval_sec: float = Form(0.25),
     columns: int = Form(10),
     rows: int = Form(10),
     thumb_width: int = Form(320),
@@ -185,6 +198,11 @@ async def analyze_sprites(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     upload_path = await save_upload_file(file=file, upload_dir=UPLOAD_DIR)
+    try:
+        duration_sec = probe_duration_or_cleanup(upload_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _enforce_max_duration(duration_sec)
     persist_sprites = os.getenv("SPRITE_PERSIST", "false").strip().lower() == "true"
     sprite_job_id = str(uuid4())
 
@@ -269,7 +287,7 @@ def analyze_token_estimate(payload: TokenEstimateRequest) -> TokenEstimateRespon
 @app.post("/analyze/token-estimate-from-file", response_model=TokenEstimateResponse)
 async def analyze_token_estimate_from_file(
     file: UploadFile = File(...),
-    interval_sec: float = Form(1.0),
+    interval_sec: float = Form(0.25),
     columns: int = Form(8),
     rows: int = Form(8),
     thumb_width: int = Form(256),
@@ -285,6 +303,7 @@ async def analyze_token_estimate_from_file(
             duration_sec = probe_duration_or_cleanup(save_path)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _enforce_max_duration(duration_sec)
 
         return estimate_tokens(
             duration_sec=duration_sec,
@@ -334,6 +353,7 @@ async def export_from_file(
         duration_sec = probe_duration_or_cleanup(input_path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _enforce_max_duration(duration_sec)
 
     try:
         raw_ranges = json.loads(trim_ranges)

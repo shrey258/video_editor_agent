@@ -240,7 +240,7 @@ def generate_sprite_sheets(
     input_path: Path,
     output_dir: Path,
     *,
-    interval_sec: float = 1.0,
+    interval_sec: float = 0.25,
     columns: int = 10,
     rows: int = 10,
     thumb_width: int = 320,

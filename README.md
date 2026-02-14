@@ -120,3 +120,4 @@ CI runs backend tests and frontend lint/test/build on push and PR.
 - Session state is in-memory, resets when backend restarts
 - This is intentionally lean for demo/showcase use
 - Sprite generation is non-persistent by default (`SPRITE_PERSIST=false`): files are created temporarily and cleaned up immediately.
+- Video duration is capped by `MAX_VIDEO_DURATION_SEC` (default `10` seconds) for predictable backend load.

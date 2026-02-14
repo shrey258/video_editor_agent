@@ -66,3 +66,25 @@ def test_suggest_cuts_fallback_explicit_range(monkeypatch):
     first = data["suggestions"][0]
     assert first["start_sec"] == 4
     assert first["end_sec"] == 5
+
+
+def test_token_estimate_from_file_rejects_over_max_duration(monkeypatch, tmp_path):
+    import app.main as main
+
+    monkeypatch.setattr(main, "MAX_VIDEO_DURATION_SEC", 10.0)
+
+    fake_file = tmp_path / "sample.mp4"
+    fake_file.write_bytes(b"dummy")
+
+    async def fake_save_upload_file(*, file, upload_dir, max_file_size_mb=None):
+        return fake_file
+
+    monkeypatch.setattr(main, "save_upload_file", fake_save_upload_file)
+    monkeypatch.setattr(main, "probe_duration_or_cleanup", lambda _: 12.0)
+
+    response = client.post(
+        "/analyze/token-estimate-from-file",
+        files={"file": ("sample.mp4", b"dummy", "video/mp4")},
+    )
+    assert response.status_code == 400
+    assert "exceeds maximum" in response.json()["detail"]
