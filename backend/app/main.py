@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Dict
@@ -15,11 +16,13 @@ from .gemini_agent import parse_intent, suggest_cuts_from_sprites
 from .schemas import (
     EditRequest,
     EditResponse,
+    ExportResponse,
     SuggestCutsRequest,
     SuggestCutsResponse,
     SpriteAnalysisResponse,
     TokenEstimateRequest,
     TokenEstimateResponse,
+    TrimRange,
     UploadResponse,
 )
 from .services.media_service import (
@@ -32,6 +35,8 @@ from .validators import validate_trim
 from .video_tools import (
     extract_range,
     generate_sprite_sheets,
+    get_duration_sec,
+    remove_segments_and_stitch,
     remove_segment_and_stitch,
 )
 
@@ -263,6 +268,85 @@ async def ai_suggest_cuts_from_sprites(payload: SuggestCutsRequest) -> SuggestCu
         suggestions=result["suggestions"],
         model=result["model"],
         strategy=result["strategy"],
+    )
+
+
+@app.post("/export/from-file", response_model=ExportResponse)
+async def export_from_file(
+    file: UploadFile = File(...),
+    trim_ranges: str = Form(default="[]"),
+) -> ExportResponse:
+    max_mb = int(os.getenv("MAX_FILE_SIZE_MB", "500"))
+    try:
+        input_path = await save_upload_file(
+            file=file, upload_dir=UPLOAD_DIR, max_file_size_mb=max_mb
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+
+    try:
+        duration_sec = probe_duration_or_cleanup(input_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        raw_ranges = json.loads(trim_ranges)
+        parsed_ranges = [TrimRange.model_validate(item) for item in raw_ranges]
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid trim_ranges JSON: {exc}") from exc
+
+    normalized_ranges: list[tuple[float, float]] = []
+    for item in parsed_ranges:
+        start_sec = float(min(item.start, item.end))
+        end_sec = float(max(item.start, item.end))
+        validate_trim(start_sec, end_sec, duration_sec)
+        normalized_ranges.append((start_sec, end_sec))
+
+    normalized_ranges.sort(key=lambda x: x[0])
+    merged_ranges: list[tuple[float, float]] = []
+    for start_sec, end_sec in normalized_ranges:
+        if not merged_ranges:
+            merged_ranges.append((start_sec, end_sec))
+            continue
+        last_start, last_end = merged_ranges[-1]
+        if start_sec <= last_end:
+            merged_ranges[-1] = (last_start, max(last_end, end_sec))
+        else:
+            merged_ranges.append((start_sec, end_sec))
+
+    if merged_ranges and merged_ranges[0][0] <= 0 and merged_ranges[-1][1] >= duration_sec:
+        # Entire timeline removed after merge.
+        only_removed = len(merged_ranges) == 1 and merged_ranges[0][0] <= 0 and merged_ranges[0][1] >= duration_sec
+        if only_removed:
+            raise HTTPException(status_code=400, detail="Cannot remove the entire video range.")
+
+    try:
+        if merged_ranges:
+            output_path = remove_segments_and_stitch(
+                input_path=input_path,
+                output_dir=OUTPUT_DIR,
+                duration_sec=duration_sec,
+                trim_ranges=merged_ranges,
+            )
+        else:
+            # No trims: produce a normal export copy by re-encoding the full source range.
+            output_path = extract_range(
+                input_path=input_path,
+                output_dir=OUTPUT_DIR,
+                start_sec=0.0,
+                end_sec=duration_sec,
+            )
+        # Sanity check output can be probed.
+        _ = get_duration_sec(output_path)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Export failed: {exc}") from exc
+
+    return ExportResponse(
+        output_url=f"/media/outputs/{output_path.name}",
+        output_name=output_path.name,
+        removed_ranges_count=len(merged_ranges),
     )
 
 

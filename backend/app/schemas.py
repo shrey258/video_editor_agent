@@ -92,3 +92,14 @@ class SuggestCutsResponse(BaseModel):
     suggestions: list[CutSuggestion]
     model: str
     strategy: str
+
+
+class TrimRange(BaseModel):
+    start: float
+    end: float
+
+
+class ExportResponse(BaseModel):
+    output_url: str
+    output_name: str
+    removed_ranges_count: int

@@ -53,6 +53,12 @@ type SuggestCutsResponse = {
     strategy: string;
 };
 
+type ExportResponse = {
+    output_url: string;
+    output_name: string;
+    removed_ranges_count: number;
+};
+
 const PLACEHOLDER_MESSAGES: ChatMessage[] = [
     {
         id: "1",
@@ -63,7 +69,7 @@ const PLACEHOLDER_MESSAGES: ChatMessage[] = [
 ];
 
 export function Inspector() {
-    const { sourceFile, setTrimRanges } = useVideo();
+    const { sourceFile, trimRanges, setTrimRanges } = useVideo();
     const [messages, setMessages] = useState<ChatMessage[]>(PLACEHOLDER_MESSAGES);
     const [input, setInput] = useState("");
     const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -72,6 +78,8 @@ export function Inspector() {
     const [tokenEstimate, setTokenEstimate] = useState<TokenEstimateResponse | null>(null);
     const [suggestions, setSuggestions] = useState<CutSuggestion[]>([]);
     const [isSuggesting, setIsSuggesting] = useState(false);
+    const [isExporting, setIsExporting] = useState(false);
+    const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -242,14 +250,89 @@ export function Inspector() {
         }
     }
 
+    async function handleExportVideo() {
+        if (!sourceFile || isExporting) return;
+        setIsExporting(true);
+        setExportResult(null);
+
+        const form = new FormData();
+        form.append("file", sourceFile);
+        form.append("trim_ranges", JSON.stringify(trimRanges));
+
+        try {
+            const response = await fetch("/api/export/from-file", {
+                method: "POST",
+                body: form,
+            });
+            const data = (await response.json()) as ExportResponse | { detail?: string };
+            if (!response.ok) {
+                const message = "detail" in data ? data.detail : undefined;
+                throw new Error(message || "Failed to export video.");
+            }
+            const result = data as ExportResponse;
+            setExportResult(result);
+
+            const downloadResponse = await fetch(result.output_url);
+            if (!downloadResponse.ok) {
+                throw new Error("Export succeeded but download failed.");
+            }
+            const blob = await downloadResponse.blob();
+            const blobUrl = URL.createObjectURL(blob);
+            const anchor = document.createElement("a");
+            anchor.href = blobUrl;
+            anchor.download = result.output_name || "export.mp4";
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            URL.revokeObjectURL(blobUrl);
+
+            setMessages((prev) => [
+                ...prev,
+                {
+                    id: Date.now().toString(),
+                    role: "assistant",
+                    content: `Export complete. Download started. Applied ${result.removed_ranges_count} trim range(s).`,
+                },
+            ]);
+        } catch (error) {
+            setMessages((prev) => [
+                ...prev,
+                {
+                    id: Date.now().toString(),
+                    role: "assistant",
+                    content:
+                        error instanceof Error
+                            ? error.message
+                            : "Export failed.",
+                },
+            ]);
+        } finally {
+            setIsExporting(false);
+        }
+    }
+
     return (
         <div className="flex h-full w-[320px] shrink-0 flex-col border-l border-zinc-800 bg-zinc-950">
             {/* Export button */}
             <div className="p-3">
-                <Button className="w-full bg-emerald-600 font-semibold text-white hover:bg-emerald-500">
+                <Button
+                    className="w-full bg-emerald-600 font-semibold text-white hover:bg-emerald-500"
+                    onClick={handleExportVideo}
+                    disabled={!sourceFile || isExporting}
+                >
                     <Download className="mr-2 h-4 w-4" />
-                    Export Video
+                    {isExporting ? "Exporting..." : "Export Video"}
                 </Button>
+                {exportResult ? (
+                    <a
+                        href={exportResult.output_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-2 block rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-center text-xs text-emerald-300 hover:bg-emerald-500/20"
+                    >
+                        Open Export: {exportResult.output_name}
+                    </a>
+                ) : null}
                 <Button
                     variant="secondary"
                     className="mt-2 w-full"

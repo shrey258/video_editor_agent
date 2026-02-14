@@ -162,6 +162,80 @@ def remove_segment_and_stitch(
     return output_path
 
 
+def remove_segments_and_stitch(
+    *,
+    input_path: Path,
+    output_dir: Path,
+    duration_sec: float,
+    trim_ranges: list[tuple[float, float]],
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if not trim_ranges:
+        return extract_range(input_path, output_dir, 0.0, duration_sec)
+
+    keep_ranges: list[tuple[float, float]] = []
+    cursor = 0.0
+    for start_sec, end_sec in trim_ranges:
+        if start_sec > cursor:
+            keep_ranges.append((cursor, start_sec))
+        cursor = max(cursor, end_sec)
+    if cursor < duration_sec:
+        keep_ranges.append((cursor, duration_sec))
+
+    # If everything is trimmed, fail fast.
+    if not keep_ranges:
+        raise RuntimeError("Cannot export: trim ranges remove the entire video.")
+
+    if len(keep_ranges) == 1:
+        start_sec, end_sec = keep_ranges[0]
+        return extract_range(input_path, output_dir, start_sec, end_sec)
+
+    output_path = output_dir / f"{uuid4()}.mp4"
+    include_audio = has_audio_stream(input_path)
+
+    filters: list[str] = []
+    for i, (start_sec, end_sec) in enumerate(keep_ranges):
+        filters.append(
+            f"[0:v]trim=start={start_sec:.3f}:end={end_sec:.3f},setpts=PTS-STARTPTS[v{i}]"
+        )
+        if include_audio:
+            filters.append(
+                f"[0:a]atrim=start={start_sec:.3f}:end={end_sec:.3f},asetpts=PTS-STARTPTS[a{i}]"
+            )
+
+    concat_inputs = "".join(
+        f"[v{i}]{f'[a{i}]' if include_audio else ''}" for i in range(len(keep_ranges))
+    )
+    if include_audio:
+        filters.append(f"{concat_inputs}concat=n={len(keep_ranges)}:v=1:a=1[v][a]")
+    else:
+        filters.append(f"{concat_inputs}concat=n={len(keep_ranges)}:v=1:a=0[v]")
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(input_path),
+        "-filter_complex",
+        ";".join(filters),
+        "-map",
+        "[v]",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "18",
+    ]
+    if include_audio:
+        cmd.extend(["-map", "[a]", "-c:a", "aac"])
+
+    cmd.append(str(output_path))
+    _run(cmd)
+    return output_path
+
+
 def generate_sprite_sheets(
     input_path: Path,
     output_dir: Path,
