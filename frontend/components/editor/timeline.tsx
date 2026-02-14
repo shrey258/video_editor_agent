@@ -7,8 +7,6 @@ import {
     ZoomOut,
     Scissors,
     Trash2,
-    Undo2,
-    Redo2,
     RotateCcw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -25,10 +23,8 @@ const TOOLBAR_ITEMS = [
     { icon: Plus, label: "Add segment", shortcut: "A" },
     { icon: ZoomIn, label: "Zoom in", shortcut: "+" },
     { icon: ZoomOut, label: "Zoom out", shortcut: "-" },
-    { icon: Scissors, label: "Split", shortcut: "S" },
+    { icon: Scissors, label: "Trim", shortcut: "T" },
     { icon: Trash2, label: "Delete", shortcut: "⌫" },
-    { icon: Undo2, label: "Undo", shortcut: "⌘Z" },
-    { icon: Redo2, label: "Redo", shortcut: "⇧⌘Z" },
     { icon: RotateCcw, label: "Reset timeline", shortcut: "" },
 ] as const;
 
@@ -76,10 +72,13 @@ function generateTicks(visibleDuration: number, zoom: number) {
 
     for (let t = 0; t <= visibleDuration; t += majorInterval) {
         majorTicks.push(t);
-        if (minorSubdivisions > 0 && t + majorInterval <= visibleDuration) {
+        if (minorSubdivisions > 0) {
             const step = majorInterval / (minorSubdivisions + 1);
             for (let i = 1; i <= minorSubdivisions; i++) {
-                minorTicks.push(t + i * step);
+                const candidate = t + i * step;
+                if (candidate <= visibleDuration) {
+                    minorTicks.push(candidate);
+                }
             }
         }
     }
@@ -348,12 +347,36 @@ export function Timeline() {
             return;
         }
 
+        const addTrimAtPlayhead = () => {
+            const startTime = Math.max(
+                0,
+                Math.min(currentTime, Math.max(0, effectiveDuration - 0.5))
+            );
+            const segmentDuration = Math.min(
+                2,
+                Math.max(0.5, effectiveDuration - startTime)
+            );
+            const nextWidget = {
+                id: crypto.randomUUID(),
+                startTime,
+                duration: segmentDuration,
+            };
+            const next = [...trimWidgetsRef.current, nextWidget];
+            setTrimWidgets(next);
+            commitTrimWidgetsToContext(next);
+            setActiveTrimId(nextWidget.id);
+        };
+
         switch (label) {
             case "Zoom in":
                 handleZoomIn();
                 break;
             case "Zoom out":
                 handleZoomOut();
+                break;
+            case "Trim":
+                addTrimAtPlayhead();
+                setIsAddSegmentMenuOpen(false);
                 break;
             case "Delete":
                 if (!activeTrimId) break;
@@ -392,14 +415,20 @@ export function Timeline() {
                                         size="sm"
                                         className="h-9 w-full justify-start gap-2 px-2 text-zinc-100 hover:bg-zinc-800 hover:text-white"
                                         onClick={() => {
-                                            const startTime = Math.max(0, Math.min(currentTime, Math.max(0, effectiveDuration - 0.5)));
-                                            const segmentDuration = Math.min(2, Math.max(0.5, effectiveDuration - startTime));
+                                            const startTime = Math.max(
+                                                0,
+                                                Math.min(currentTime, Math.max(0, effectiveDuration - 0.5))
+                                            );
+                                            const segmentDuration = Math.min(
+                                                2,
+                                                Math.max(0.5, effectiveDuration - startTime)
+                                            );
                                             const nextWidget = {
                                                 id: crypto.randomUUID(),
                                                 startTime,
                                                 duration: segmentDuration,
                                             };
-                                            const next = [...trimWidgets, nextWidget];
+                                            const next = [...trimWidgetsRef.current, nextWidget];
                                             setTrimWidgets(next);
                                             commitTrimWidgetsToContext(next);
                                             setActiveTrimId(nextWidget.id);
