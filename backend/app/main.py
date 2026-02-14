@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import os
 from pathlib import Path
 from typing import Dict
@@ -23,11 +22,16 @@ from .schemas import (
     TokenEstimateResponse,
     UploadResponse,
 )
+from .services.media_service import (
+    probe_duration_or_cleanup,
+    save_upload_file,
+    validate_sprite_params,
+)
+from .services.token_service import estimate_tokens
 from .validators import validate_trim
 from .video_tools import (
     extract_range,
     generate_sprite_sheets,
-    get_duration_sec,
     remove_segment_and_stitch,
 )
 
@@ -59,48 +63,6 @@ app.mount("/media/sprites", StaticFiles(directory=str(SPRITES_DIR)), name="sprit
 video_sessions: Dict[str, dict] = {}
 
 
-def estimate_tokens(
-    *,
-    duration_sec: float,
-    interval_sec: float,
-    columns: int,
-    rows: int,
-    thumb_width: int,
-) -> TokenEstimateResponse:
-    total_frames = max(1, int(math.floor(duration_sec / interval_sec)) + 1)
-    frames_per_sheet = max(1, columns * rows)
-    sheet_count = max(1, int(math.ceil(total_frames / frames_per_sheet)))
-
-    # Heuristic estimates for planning only (not exact provider billing numbers).
-    direct_video_tokens_est = int(duration_sec * 180 + 400)
-    per_frame_tokens = max(45, int(85 * (thumb_width / 256)))
-    sprite_tokens_est = int(total_frames * per_frame_tokens + sheet_count * 40 + 250)
-
-    ratio = sprite_tokens_est / max(direct_video_tokens_est, 1)
-    if ratio <= 0.7:
-        recommendation = "Sprites are likely more token-efficient than direct video upload."
-    elif ratio <= 1.1:
-        recommendation = "Sprites and direct upload are in a similar token range."
-    else:
-        recommendation = (
-            "Direct video upload may be more token-efficient for this configuration."
-        )
-
-    return TokenEstimateResponse(
-        duration_sec=round(duration_sec, 3),
-        direct_video_tokens_est=direct_video_tokens_est,
-        sprite_tokens_est=sprite_tokens_est,
-        total_frames=total_frames,
-        sheet_count=sheet_count,
-        recommendation=recommendation,
-        notes=[
-            "Estimates are heuristic and model-dependent.",
-            "Increase interval_sec or lower thumb_width to reduce sprite tokens.",
-            "Use sprites for controllability/provider portability; use direct upload for temporal richness.",
-        ],
-    )
-
-
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
@@ -109,22 +71,20 @@ def health() -> dict:
 @app.post("/upload", response_model=UploadResponse)
 async def upload_video(file: UploadFile = File(...)) -> UploadResponse:
     max_mb = int(os.getenv("MAX_FILE_SIZE_MB", "500"))
-    body = await file.read()
-    if len(body) > max_mb * 1024 * 1024:
-        raise HTTPException(status_code=413, detail=f"File exceeds {max_mb} MB")
-
-    suffix = Path(file.filename or "upload.mp4").suffix or ".mp4"
-    filename = f"{uuid4()}{suffix}"
-    save_path = UPLOAD_DIR / filename
-    save_path.write_bytes(body)
+    try:
+        save_path = await save_upload_file(
+            file=file, upload_dir=UPLOAD_DIR, max_file_size_mb=max_mb
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
 
     try:
-        duration = get_duration_sec(save_path)
-    except Exception as exc:
-        save_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail=f"Invalid media file: {exc}") from exc
+        duration = probe_duration_or_cleanup(save_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     video_id = str(uuid4())
+    filename = save_path.name
     video_sessions[video_id] = {
         "input_path": save_path,
         "duration_sec": duration,
@@ -200,15 +160,11 @@ async def analyze_sprites(
     rows: int = Form(10),
     thumb_width: int = Form(320),
 ) -> SpriteAnalysisResponse:
-    if interval_sec <= 0:
-        raise HTTPException(status_code=400, detail="interval_sec must be greater than 0.")
-    if columns <= 0 or rows <= 0:
-        raise HTTPException(status_code=400, detail="columns and rows must be greater than 0.")
-
-    suffix = Path(file.filename or "upload.mp4").suffix or ".mp4"
-    upload_name = f"{uuid4()}{suffix}"
-    upload_path = UPLOAD_DIR / upload_name
-    upload_path.write_bytes(await file.read())
+    try:
+        validate_sprite_params(interval_sec, columns, rows)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    upload_path = await save_upload_file(file=file, upload_dir=UPLOAD_DIR)
 
     sprite_job_id = str(uuid4())
     sprite_output_dir = SPRITES_DIR / sprite_job_id
@@ -270,21 +226,16 @@ async def analyze_token_estimate_from_file(
     rows: int = Form(8),
     thumb_width: int = Form(256),
 ) -> TokenEstimateResponse:
-    if interval_sec <= 0:
-        raise HTTPException(status_code=400, detail="interval_sec must be greater than 0.")
-    if columns <= 0 or rows <= 0:
-        raise HTTPException(status_code=400, detail="columns and rows must be greater than 0.")
-
-    suffix = Path(file.filename or "upload.mp4").suffix or ".mp4"
-    filename = f"{uuid4()}{suffix}"
-    save_path = UPLOAD_DIR / filename
-    save_path.write_bytes(await file.read())
+    try:
+        validate_sprite_params(interval_sec, columns, rows)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    save_path = await save_upload_file(file=file, upload_dir=UPLOAD_DIR)
 
     try:
-        duration_sec = get_duration_sec(save_path)
-    except Exception as exc:
-        save_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail=f"Invalid media file: {exc}") from exc
+        duration_sec = probe_duration_or_cleanup(save_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return estimate_tokens(
         duration_sec=duration_sec,

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 
 import httpx
 
 from .validators import parse_time_like
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_json(text: str) -> dict:
@@ -119,8 +122,8 @@ async def suggest_cuts_from_sprites(
     sheets_count: int,
 ) -> dict:
     api_key = os.getenv("GEMINI_API_KEY")
-    print(
-        "SUGGEST_CUTS_REQUEST:",
+    logger.info(
+        "SUGGEST_CUTS_REQUEST %s",
         {
             "duration_sec": duration_sec,
             "sprite_interval_sec": sprite_interval_sec,
@@ -135,7 +138,7 @@ async def suggest_cuts_from_sprites(
             "strategy": "rule-based",
             "suggestions": _fallback_suggest_cuts(prompt, duration_sec),
         }
-        print("SUGGEST_CUTS_FALLBACK_RESPONSE:", fallback)
+        logger.info("SUGGEST_CUTS_FALLBACK_RESPONSE %s", fallback)
         return fallback
 
     url = (
@@ -166,7 +169,7 @@ async def suggest_cuts_from_sprites(
         response.raise_for_status()
         data = response.json()
     text = data["candidates"][0]["content"]["parts"][0]["text"]
-    print("GEMINI_RAW_SUGGEST_RESPONSE:", text)
+    logger.info("GEMINI_RAW_SUGGEST_RESPONSE %s", text)
     parsed = _extract_json(text)
     raw_suggestions = parsed.get("suggestions", [])
 
@@ -201,5 +204,5 @@ async def suggest_cuts_from_sprites(
         "strategy": "sprite-summary-prompt",
         "suggestions": normalized,
     }
-    print("SUGGEST_CUTS_NORMALIZED_RESPONSE:", result)
+    logger.info("SUGGEST_CUTS_NORMALIZED_RESPONSE %s", result)
     return result
