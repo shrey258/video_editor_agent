@@ -32,6 +32,23 @@ const TOOLBAR_ITEMS = [
     { icon: RotateCcw, label: "Reset timeline", shortcut: "" },
 ] as const;
 
+type TrimWidget = { id: string; startTime: number; duration: number };
+
+function areRangesEquivalent(
+    widgets: TrimWidget[],
+    ranges: Array<{ start: number; end: number }>
+): boolean {
+    if (widgets.length !== ranges.length) return false;
+    const sortedWidgets = [...widgets].sort((a, b) => a.startTime - b.startTime);
+    const sortedRanges = [...ranges].sort((a, b) => a.start - b.start);
+    return sortedWidgets.every((w, i) => {
+        const r = sortedRanges[i];
+        const startDiff = Math.abs(w.startTime - r.start);
+        const endDiff = Math.abs(w.startTime + w.duration - r.end);
+        return startDiff < 0.02 && endDiff < 0.02;
+    });
+}
+
 /** Generate ruler tick marks with major and minor intervals */
 function generateTicks(visibleDuration: number, zoom: number) {
     let majorInterval = 1;
@@ -86,13 +103,14 @@ export function Timeline() {
         duration,
         currentTime,
         hasVideo,
+        trimRanges,
         seek,
         setTrimRanges,
     } = useVideo();
 
     const [zoom, setZoom] = useState(1);
     const [isAddSegmentMenuOpen, setIsAddSegmentMenuOpen] = useState(false);
-    const [trimWidgets, setTrimWidgets] = useState<Array<{ id: string; startTime: number; duration: number }>>([]);
+    const [trimWidgets, setTrimWidgets] = useState<TrimWidget[]>([]);
     const [activeTrimId, setActiveTrimId] = useState<string | null>(null);
     const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
     const [dragState, setDragState] = useState<{
@@ -106,9 +124,11 @@ export function Timeline() {
     const trackRef = useRef<HTMLDivElement>(null);
     const hasMovedDuringDragRef = useRef(false);
     const suppressNextTrackClickRef = useRef(false);
+    const isLocalEditRef = useRef(false);
 
     const commitTrimWidgetsToContext = useCallback(
-        (widgets: Array<{ id: string; startTime: number; duration: number }>) => {
+        (widgets: TrimWidget[]) => {
+            isLocalEditRef.current = true;
             setTrimRanges(
                 widgets.map((w) => ({
                     start: w.startTime,
@@ -118,6 +138,23 @@ export function Timeline() {
         },
         [setTrimRanges]
     );
+
+    useEffect(() => {
+        if (isLocalEditRef.current) {
+            isLocalEditRef.current = false;
+            return;
+        }
+        if (areRangesEquivalent(trimWidgets, trimRanges)) return;
+        const nextWidgets: TrimWidget[] = trimRanges.map((range) => ({
+            id: crypto.randomUUID(),
+            startTime: range.start,
+            duration: Math.max(0.05, range.end - range.start),
+        }));
+        setTrimWidgets(nextWidgets);
+        if (!nextWidgets.some((w) => w.id === activeTrimId)) {
+            setActiveTrimId(nextWidgets[0]?.id ?? null);
+        }
+    }, [trimRanges, trimWidgets, activeTrimId]);
 
     // Track container width so the timeline always fills the available space
     useEffect(() => {

@@ -40,6 +40,19 @@ type TokenEstimateResponse = {
     notes: string[];
 };
 
+type CutSuggestion = {
+    start_sec: number;
+    end_sec: number;
+    reason: string;
+    confidence: number;
+};
+
+type SuggestCutsResponse = {
+    suggestions: CutSuggestion[];
+    model: string;
+    strategy: string;
+};
+
 const PLACEHOLDER_MESSAGES: ChatMessage[] = [
     {
         id: "1",
@@ -50,20 +63,22 @@ const PLACEHOLDER_MESSAGES: ChatMessage[] = [
 ];
 
 export function Inspector() {
-    const { sourceFile } = useVideo();
+    const { sourceFile, setTrimRanges } = useVideo();
     const [messages, setMessages] = useState<ChatMessage[]>(PLACEHOLDER_MESSAGES);
     const [input, setInput] = useState("");
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [isEstimating, setIsEstimating] = useState(false);
     const [spriteData, setSpriteData] = useState<SpriteAnalysisResponse | null>(null);
     const [tokenEstimate, setTokenEstimate] = useState<TokenEstimateResponse | null>(null);
+    const [suggestions, setSuggestions] = useState<CutSuggestion[]>([]);
+    const [isSuggesting, setIsSuggesting] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
 
-    function handleSend() {
+    async function handleSend() {
         if (!input.trim()) return;
         const userMsg: ChatMessage = {
             id: Date.now().toString(),
@@ -72,16 +87,62 @@ export function Inspector() {
         };
         setMessages((prev) => [...prev, userMsg]);
         setInput("");
+        if (!spriteData) {
+            setMessages((prev) => [
+                ...prev,
+                {
+                    id: (Date.now() + 1).toString(),
+                    role: "assistant",
+                    content: "Generate sprites first, then I can suggest cut ranges.",
+                },
+            ]);
+            return;
+        }
 
-        // Mock assistant reply
-        setTimeout(() => {
-            const reply: ChatMessage = {
-                id: (Date.now() + 1).toString(),
-                role: "assistant",
-                content: `I'll process: "${userMsg.content}". This would parse intent via Gemini and execute an FFmpeg operation.`,
-            };
-            setMessages((prev) => [...prev, reply]);
-        }, 600);
+        setIsSuggesting(true);
+        try {
+            const response = await fetch("/api/ai/suggest-cuts-from-sprites", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    prompt: userMsg.content,
+                    duration_sec: spriteData.duration_sec,
+                    sprite_interval_sec: spriteData.interval_sec,
+                    total_frames: spriteData.total_frames,
+                    sheets_count: spriteData.sheets.length,
+                }),
+            });
+            const data = (await response.json()) as SuggestCutsResponse | { detail?: string };
+            if (!response.ok) {
+                const message = "detail" in data ? data.detail : undefined;
+                throw new Error(message || "Failed to suggest cuts.");
+            }
+            const result = data as SuggestCutsResponse;
+            setSuggestions(result.suggestions);
+            setTrimRanges(result.suggestions.map((s) => ({ start: s.start_sec, end: s.end_sec })));
+            setMessages((prev) => [
+                ...prev,
+                {
+                    id: (Date.now() + 1).toString(),
+                    role: "assistant",
+                    content: `Suggested ${result.suggestions.length} cut(s) via ${result.model}. Applied to timeline.`,
+                },
+            ]);
+        } catch (error) {
+            setMessages((prev) => [
+                ...prev,
+                {
+                    id: (Date.now() + 1).toString(),
+                    role: "assistant",
+                    content:
+                        error instanceof Error
+                            ? error.message
+                            : "Failed to suggest cuts.",
+                },
+            ]);
+        } finally {
+            setIsSuggesting(false);
+        }
     }
 
     function handleKeyDown(e: React.KeyboardEvent) {
@@ -271,6 +332,27 @@ export function Inspector() {
                             </p>
                         </div>
                     ) : null}
+                    {suggestions.length > 0 ? (
+                        <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-3">
+                            <p className="text-xs font-semibold text-zinc-300">AI Suggestions</p>
+                            <div className="mt-2 space-y-1">
+                                {suggestions.map((s, idx) => (
+                                    <div
+                                        key={`${s.start_sec}-${s.end_sec}-${idx}`}
+                                        className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300"
+                                    >
+                                        <span className="font-mono text-zinc-100">
+                                            {s.start_sec.toFixed(2)}s → {s.end_sec.toFixed(2)}s
+                                        </span>
+                                        <span className="ml-2 text-zinc-400">
+                                            ({Math.round(s.confidence * 100)}%)
+                                        </span>
+                                        <p className="text-zinc-500">{s.reason}</p>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    ) : null}
                     {messages.map((msg) => (
                         <div
                             key={msg.id}
@@ -319,7 +401,7 @@ export function Inspector() {
                         variant="ghost"
                         size="icon"
                         onClick={handleSend}
-                        disabled={!input.trim()}
+                        disabled={!input.trim() || isSuggesting}
                         className="h-7 w-7 shrink-0 text-primary hover:bg-primary/20 hover:text-primary disabled:text-zinc-600"
                     >
                         <Send className="h-4 w-4" />

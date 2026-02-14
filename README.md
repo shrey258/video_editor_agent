@@ -55,6 +55,9 @@ Open [http://localhost:3000](http://localhost:3000).
 - `POST /analyze/token-estimate-from-file` (`multipart/form-data`)
   - fields: `file`, optional `interval_sec`, `columns`, `rows`, `thumb_width`
   - same estimate, with backend deriving duration from uploaded file
+- `POST /ai/suggest-cuts-from-sprites` (`application/json`)
+  - fields: `prompt`, `duration_sec`, `sprite_interval_sec`, `total_frames`, `sheets_count`
+  - returns cut suggestions `{start_sec,end_sec,reason,confidence}` for timeline application
 
 ## Notes
 

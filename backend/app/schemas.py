@@ -71,3 +71,24 @@ class TokenEstimateResponse(BaseModel):
     sheet_count: int
     recommendation: str
     notes: list[str]
+
+
+class CutSuggestion(BaseModel):
+    start_sec: float
+    end_sec: float
+    reason: str
+    confidence: float = 0.5
+
+
+class SuggestCutsRequest(BaseModel):
+    prompt: str = Field(min_length=1)
+    duration_sec: float = Field(gt=0)
+    sprite_interval_sec: float = Field(gt=0)
+    total_frames: int = Field(gt=0)
+    sheets_count: int = Field(gt=0)
+
+
+class SuggestCutsResponse(BaseModel):
+    suggestions: list[CutSuggestion]
+    model: str
+    strategy: str

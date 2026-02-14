@@ -12,10 +12,12 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
-from .gemini_agent import parse_intent
+from .gemini_agent import parse_intent, suggest_cuts_from_sprites
 from .schemas import (
     EditRequest,
     EditResponse,
+    SuggestCutsRequest,
+    SuggestCutsResponse,
     SpriteAnalysisResponse,
     TokenEstimateRequest,
     TokenEstimateResponse,
@@ -290,6 +292,26 @@ async def analyze_token_estimate_from_file(
         columns=columns,
         rows=rows,
         thumb_width=thumb_width,
+    )
+
+
+@app.post("/ai/suggest-cuts-from-sprites", response_model=SuggestCutsResponse)
+async def ai_suggest_cuts_from_sprites(payload: SuggestCutsRequest) -> SuggestCutsResponse:
+    try:
+        result = await suggest_cuts_from_sprites(
+            prompt=payload.prompt,
+            duration_sec=payload.duration_sec,
+            sprite_interval_sec=payload.sprite_interval_sec,
+            total_frames=payload.total_frames,
+            sheets_count=payload.sheets_count,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return SuggestCutsResponse(
+        suggestions=result["suggestions"],
+        model=result["model"],
+        strategy=result["strategy"],
     )
 
 

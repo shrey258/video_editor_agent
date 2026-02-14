@@ -67,3 +67,139 @@ async def parse_intent(prompt: str, duration_sec: float) -> dict:
         "end_sec": parse_time_like(parsed["end_sec"]),
         "reason": parsed.get("reason", "Parsed by Gemini."),
     }
+
+
+def _fallback_suggest_cuts(prompt: str, duration_sec: float) -> list[dict]:
+    lowered = prompt.lower()
+    matches = re.findall(r"(?:from|between)\s+([0-9:.]+)\s+(?:to|and|-)\s+([0-9:.]+)", lowered)
+    if matches:
+        suggestions = []
+        for start_raw, end_raw in matches:
+            start_sec = parse_time_like(start_raw)
+            end_sec = parse_time_like(end_raw)
+            if 0 <= start_sec < end_sec <= duration_sec:
+                suggestions.append(
+                    {
+                        "start_sec": start_sec,
+                        "end_sec": end_sec,
+                        "reason": "Parsed explicit range from prompt.",
+                        "confidence": 0.9,
+                    }
+                )
+        if suggestions:
+            return suggestions
+
+    if "recommend" in lowered or "suggest" in lowered:
+        segment = max(0.5, duration_sec * 0.08)
+        points = [duration_sec * 0.22, duration_sec * 0.5, duration_sec * 0.78]
+        suggestions = []
+        for p in points:
+            start_sec = max(0.0, p - segment / 2)
+            end_sec = min(duration_sec, start_sec + segment)
+            if end_sec - start_sec >= 0.3:
+                suggestions.append(
+                    {
+                        "start_sec": round(start_sec, 3),
+                        "end_sec": round(end_sec, 3),
+                        "reason": "Fallback recommendation window.",
+                        "confidence": 0.45,
+                    }
+                )
+        return suggestions[:3]
+
+    return []
+
+
+async def suggest_cuts_from_sprites(
+    *,
+    prompt: str,
+    duration_sec: float,
+    sprite_interval_sec: float,
+    total_frames: int,
+    sheets_count: int,
+) -> dict:
+    api_key = os.getenv("GEMINI_API_KEY")
+    print(
+        "SUGGEST_CUTS_REQUEST:",
+        {
+            "duration_sec": duration_sec,
+            "sprite_interval_sec": sprite_interval_sec,
+            "total_frames": total_frames,
+            "sheets_count": sheets_count,
+            "prompt": prompt,
+        },
+    )
+    if not api_key:
+        fallback = {
+            "model": "fallback",
+            "strategy": "rule-based",
+            "suggestions": _fallback_suggest_cuts(prompt, duration_sec),
+        }
+        print("SUGGEST_CUTS_FALLBACK_RESPONSE:", fallback)
+        return fallback
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-2.0-flash:generateContent?key={api_key}"
+    )
+
+    instructions = (
+        "You are an editing planner. Return strict JSON only.\n"
+        "Schema: {\"suggestions\":[{\"start_sec\":number,\"end_sec\":number,\"reason\":string,\"confidence\":number}]}\n"
+        f"Video duration: {duration_sec:.3f}s\n"
+        f"Sprite analysis summary: interval={sprite_interval_sec}s, total_frames={total_frames}, sheets={sheets_count}\n"
+        "Rules:\n"
+        "- Produce 0 to 8 suggestions.\n"
+        "- Each suggestion must satisfy 0 <= start_sec < end_sec <= duration.\n"
+        "- Confidence range 0..1\n"
+        "- If prompt asks recommendation, infer likely removable boring/dead sections.\n"
+        "- If prompt gives explicit ranges, prioritize those.\n"
+    )
+
+    payload = {
+        "contents": [{"parts": [{"text": f"{instructions}\nUser prompt: {prompt}"}]}],
+        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(url, json=payload)
+        response.raise_for_status()
+        data = response.json()
+    text = data["candidates"][0]["content"]["parts"][0]["text"]
+    print("GEMINI_RAW_SUGGEST_RESPONSE:", text)
+    parsed = _extract_json(text)
+    raw_suggestions = parsed.get("suggestions", [])
+
+    normalized: list[dict] = []
+    for item in raw_suggestions:
+        try:
+            start_sec = parse_time_like(item["start_sec"])
+            end_sec = parse_time_like(item["end_sec"])
+        except Exception:
+            continue
+        if not (0 <= start_sec < end_sec <= duration_sec):
+            continue
+        confidence_raw = item.get("confidence", 0.5)
+        try:
+            confidence = float(confidence_raw)
+        except Exception:
+            confidence = 0.5
+        normalized.append(
+            {
+                "start_sec": round(start_sec, 3),
+                "end_sec": round(end_sec, 3),
+                "reason": str(item.get("reason", "Model suggestion")),
+                "confidence": max(0.0, min(1.0, confidence)),
+            }
+        )
+
+    if not normalized:
+        normalized = _fallback_suggest_cuts(prompt, duration_sec)
+
+    result = {
+        "model": "gemini-2.0-flash",
+        "strategy": "sprite-summary-prompt",
+        "suggestions": normalized,
+    }
+    print("SUGGEST_CUTS_NORMALIZED_RESPONSE:", result)
+    return result
