@@ -349,47 +349,77 @@ export function Inspector() {
                 backdropFilter: "blur(20px)",
             }}
         >
-            {/* Export button */}
-            <div className="p-3">
-                <Button
-                    className="w-full bg-emerald-600 font-semibold text-white hover:bg-emerald-500"
+            {/* Action dock */}
+            <div className="p-3 space-y-2.5">
+                {/* Hero export button */}
+                <button
+                    className="group relative w-full rounded-xl py-2.5 text-sm font-semibold text-white transition-all duration-200 ease disabled:opacity-40 disabled:cursor-not-allowed"
+                    style={{
+                        background: "linear-gradient(180deg, rgb(16,185,129) 0%, rgb(5,150,105) 100%)",
+                        boxShadow: "0 0 0 1px rgba(52,211,153,0.3), 0 1px 0 0 rgba(255,255,255,0.1) inset, 0 4px 16px -4px rgba(16,185,129,0.4), 0 1px 2px rgba(0,0,0,0.2)",
+                    }}
                     onClick={handleExportVideo}
                     disabled={!sourceFile || isExporting || isVideoTooLong}
                 >
-                    <Download className="mr-2 h-4 w-4" />
-                    {isExporting ? "Exporting..." : "Export Video"}
-                </Button>
+                    <span className="flex items-center justify-center gap-2">
+                        <Download className="h-4 w-4" />
+                        {isExporting ? "Exporting..." : "Export Video"}
+                    </span>
+                </button>
 
                 {exportResult ? (
                     <a
                         href={exportResult.output_url}
                         target="_blank"
                         rel="noreferrer"
-                        className="mt-2 block rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-center text-xs text-emerald-300 hover:bg-emerald-500/20"
+                        className="block rounded-lg px-3 py-2 text-center text-xs text-emerald-300 transition-colors duration-200 ease hover:bg-emerald-500/15"
+                        style={{
+                            border: "1px solid rgba(52,211,153,0.2)",
+                            background: "rgba(16,185,129,0.06)",
+                        }}
                     >
                         Open Export: {exportResult.output_name}
                     </a>
                 ) : null}
-                <Button
-                    variant="secondary"
-                    className="mt-2 w-full"
-                    onClick={handleGenerateSprites}
-                    disabled={!sourceFile || isAnalyzing || isVideoTooLong}
-                >
-                    <Film className="mr-2 h-4 w-4" />
-                    {isAnalyzing ? "Generating Sprites..." : "Generate Sprites"}
-                </Button>
-                <Button
-                    variant="secondary"
-                    className="mt-2 w-full"
-                    onClick={handleEstimateTokens}
-                    disabled={!sourceFile || isEstimating || isVideoTooLong}
-                >
-                    <Sigma className="mr-2 h-4 w-4" />
-                    {isEstimating ? "Estimating Tokens..." : "Estimate Tokens"}
-                </Button>
+
+                {/* Secondary actions — compact glass row */}
+                <div className="flex gap-2">
+                    <button
+                        className="flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium text-zinc-300 transition-all duration-200 ease hover:text-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                        style={{
+                            border: "1px solid rgba(255,255,255,0.06)",
+                            background: "linear-gradient(180deg, rgba(39,39,42,0.5) 0%, rgba(24,24,27,0.6) 100%)",
+                            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                        }}
+                        onClick={handleGenerateSprites}
+                        disabled={!sourceFile || isAnalyzing || isVideoTooLong}
+                    >
+                        <Film className="h-3.5 w-3.5 text-zinc-400" />
+                        {isAnalyzing ? "Generating..." : "Sprites"}
+                    </button>
+                    <button
+                        className="flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium text-zinc-300 transition-all duration-200 ease hover:text-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                        style={{
+                            border: "1px solid rgba(255,255,255,0.06)",
+                            background: "linear-gradient(180deg, rgba(39,39,42,0.5) 0%, rgba(24,24,27,0.6) 100%)",
+                            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                        }}
+                        onClick={handleEstimateTokens}
+                        disabled={!sourceFile || isEstimating || isVideoTooLong}
+                    >
+                        <Sigma className="h-3.5 w-3.5 text-zinc-400" />
+                        {isEstimating ? "Estimating..." : "Tokens"}
+                    </button>
+                </div>
+
                 {isVideoTooLong ? (
-                    <p className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-300">
+                    <p
+                        className="rounded-lg px-2.5 py-1.5 text-xs text-amber-300"
+                        style={{
+                            border: "1px solid rgba(245,158,11,0.2)",
+                            background: "rgba(245,158,11,0.06)",
+                        }}
+                    >
                         AI/Export is limited to {MAX_VIDEO_DURATION_SEC}s max. Current: {durationLabel}.
                     </p>
                 ) : null}
