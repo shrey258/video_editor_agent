@@ -528,9 +528,19 @@ export function Timeline() {
 
     return (
         <TooltipProvider delayDuration={200}>
-            <div className={`flex h-[220px] shrink-0 flex-col border-t border-zinc-800 bg-zinc-950 transition-opacity duration-200 ${hasVideo ? "opacity-100" : "opacity-40 pointer-events-none"}`}>
+            <div
+                className={`flex h-[220px] shrink-0 flex-col transition-opacity duration-200 ${hasVideo ? "opacity-100" : "opacity-40 pointer-events-none"}`}
+                style={{
+                    borderTop: "1px solid rgba(255,255,255,0.06)",
+                    background: "linear-gradient(180deg, rgba(24,24,27,0.8) 0%, rgba(9,9,11,0.9) 100%)",
+                    backdropFilter: "blur(20px)",
+                }}
+            >
                 {/* Toolbar */}
-                <div className="flex items-center gap-1 border-b border-zinc-800/60 px-3 py-1.5">
+                <div
+                    className="flex items-center gap-1 px-3 py-1.5"
+                    style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}
+                >
                     {TOOLBAR_ITEMS.map((item, i) => (
                         <div key={item.label} className="relative flex items-center">
                             {i === 5 && (
