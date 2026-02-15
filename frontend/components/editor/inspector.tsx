@@ -82,6 +82,7 @@ export function Inspector() {
     const [isExporting, setIsExporting] = useState(false);
     const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
     const isVideoTooLong = duration > MAX_VIDEO_DURATION_SEC;
     const durationLabel =
         Number.isFinite(duration) && duration > 0 ? `${duration.toFixed(2)}s` : "unknown";
@@ -89,6 +90,14 @@ export function Inspector() {
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
+
+    // Auto-resize textarea to fit content
+    useEffect(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        el.style.height = "auto";
+        el.style.height = `${el.scrollHeight}px`;
+    }, [input]);
 
     async function handleSend() {
         if (!input.trim()) return;
@@ -472,8 +481,8 @@ export function Inspector() {
                         >
                             <div
                                 className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${msg.role === "assistant"
-                                        ? "bg-primary/20 text-primary"
-                                        : "bg-zinc-700 text-zinc-300"
+                                    ? "bg-primary/20 text-primary"
+                                    : "bg-zinc-700 text-zinc-300"
                                     }`}
                             >
                                 {msg.role === "assistant" ? (
@@ -484,8 +493,8 @@ export function Inspector() {
                             </div>
                             <div
                                 className={`rounded-lg px-3 py-2 text-[13px] leading-relaxed ${msg.role === "assistant"
-                                        ? "bg-zinc-800/80 text-zinc-300"
-                                        : "bg-primary/15 text-zinc-200"
+                                    ? "bg-zinc-800/80 text-zinc-300"
+                                    : "bg-primary/15 text-zinc-200"
                                     }`}
                             >
                                 {msg.content}
@@ -500,28 +509,30 @@ export function Inspector() {
 
             {/* Chat input */}
             <div className="p-3">
-                <div className="flex items-end gap-2 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 focus-within:border-primary/50 transition-colors duration-200">
+                <div className="flex items-end gap-2 rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 py-2.5 shadow-[inset_0_1px_2px_rgba(0,0,0,0.3)] ring-1 ring-transparent transition-all duration-200 ease focus-within:border-transparent focus-within:ring-primary/40 focus-within:shadow-[inset_0_1px_2px_rgba(0,0,0,0.3),0_0_0_1px_hsl(142_71%_45%/0.15)]">
                     <textarea
+                        ref={textareaRef}
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={handleKeyDown}
                         placeholder="Describe your edit..."
                         rows={1}
-                        className="max-h-24 w-full resize-none bg-transparent text-sm text-zinc-200 placeholder:text-zinc-500 focus:outline-none"
+                        className="scrollbar-hide max-h-28 min-h-[1.5rem] w-full resize-none overflow-y-auto bg-transparent text-[13px] leading-relaxed text-zinc-200 placeholder:text-zinc-500 placeholder:transition-colors placeholder:duration-200 focus:outline-none focus:placeholder:text-zinc-600"
                     />
                     <Button
                         variant="ghost"
                         size="icon"
                         onClick={handleSend}
                         disabled={!input.trim() || isSuggesting || isVideoTooLong}
-                        className="h-7 w-7 shrink-0 text-primary hover:bg-primary/20 hover:text-primary disabled:text-zinc-600"
+                        className="h-7 w-7 shrink-0 rounded-lg text-primary transition-all duration-200 ease hover:bg-primary/15 hover:text-primary active:scale-95 disabled:text-zinc-600"
                     >
-                        <Send className="h-4 w-4" />
+                        <Send className="h-3.5 w-3.5" />
                     </Button>
                 </div>
-                <p className="mt-2 text-center text-[11px] text-zinc-600">
-                    Try: &quot;Trim from 00:12 to 00:47&quot;
-                </p>
+                <div className="mt-2 flex items-center justify-center gap-1.5 text-[11px] text-zinc-600">
+                    <span>Try: &quot;Trim from 00:12 to 00:47&quot;</span>
+                    <kbd className="rounded border border-zinc-800 bg-zinc-900/80 px-1 py-px font-mono text-[10px] leading-none text-zinc-500">⏎</kbd>
+                </div>
             </div>
         </div>
     );
