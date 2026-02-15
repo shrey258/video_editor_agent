@@ -352,9 +352,7 @@ export function Inspector() {
                     <Download className="mr-2 h-4 w-4" />
                     {isExporting ? "Exporting..." : "Export Video"}
                 </Button>
-                <p className="mt-1 text-center text-[11px] text-zinc-500">
-                    Export speed: {speedRanges.some((range) => range.speed > 1) ? "2x" : "1x"}
-                </p>
+            
                 {exportResult ? (
                     <a
                         href={exportResult.output_url}

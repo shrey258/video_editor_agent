@@ -645,10 +645,11 @@ export function Timeline() {
                                     trimWidgets.map((widget) => (
                                         <div
                                             key={`mask-${widget.id}`}
-                                            className="absolute inset-y-0 z-[9] rounded-md border border-red-400/50 bg-red-500/20"
+                                            className="absolute inset-y-0 z-[9] rounded-md bg-red-950/30"
                                             style={{
                                                 left: `${widget.startTime * pxPerSecond + 4}px`,
                                                 width: `${widget.duration * pxPerSecond}px`,
+                                                backgroundImage: "repeating-linear-gradient(135deg, transparent, transparent 4px, rgba(239,68,68,0.08) 4px, rgba(239,68,68,0.08) 5px)",
                                             }}
                                         />
                                     ))}
@@ -660,10 +661,14 @@ export function Timeline() {
                                         return (
                                             <div
                                                 key={widget.id}
-                                                className={`absolute inset-y-0 z-10 flex items-center justify-center rounded-md border-2 bg-emerald-200/50 backdrop-blur-sm cursor-move group ${isActive ? "border-emerald-300" : "border-emerald-500/70"}`}
+                                                className={`absolute inset-y-0 z-10 flex items-center justify-center rounded-lg cursor-move group transition-shadow duration-200 ${isActive ? "shadow-[0_0_0_1px_rgba(244,63,94,0.6),0_0_12px_-2px_rgba(244,63,94,0.3)]" : "shadow-[0_0_0_1px_rgba(244,63,94,0.35)]"}`}
                                                 style={{
                                                     left: `${widget.startTime * pxPerSecond + 4}px`,
                                                     width: `${widget.duration * pxPerSecond}px`,
+                                                    background: isActive
+                                                        ? "linear-gradient(135deg, rgba(244,63,94,0.25) 0%, rgba(251,113,133,0.18) 50%, rgba(244,63,94,0.22) 100%)"
+                                                        : "linear-gradient(135deg, rgba(244,63,94,0.15) 0%, rgba(251,113,133,0.10) 50%, rgba(244,63,94,0.12) 100%)",
+                                                    backdropFilter: "blur(6px)",
                                                 }}
                                                 onMouseDown={(e) => {
                                                     e.stopPropagation();
@@ -680,9 +685,17 @@ export function Timeline() {
                                                     });
                                                 }}
                                             >
+                                                {/* Diagonal stripe pattern overlay */}
+                                                <div
+                                                    className="absolute inset-0 rounded-lg opacity-30 pointer-events-none"
+                                                    style={{
+                                                        backgroundImage: "repeating-linear-gradient(135deg, transparent, transparent 6px, rgba(244,63,94,0.12) 6px, rgba(244,63,94,0.12) 7px)",
+                                                    }}
+                                                />
+
                                                 {/* Left Resize Handle */}
                                                 <div
-                                                    className="absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize hover:bg-emerald-500/20 z-20"
+                                                    className="absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize z-20 flex items-center justify-center"
                                                     onMouseDown={(e) => {
                                                         e.stopPropagation();
                                                         hasMovedDuringDragRef.current = false;
@@ -697,17 +710,27 @@ export function Timeline() {
                                                             initialDuration: widget.duration,
                                                         });
                                                     }}
-                                                />
+                                                >
+                                                    <div className={`w-1 h-6 rounded-full transition-colors duration-200 ${isActive ? "bg-rose-400" : "bg-rose-400/60 group-hover:bg-rose-400"}`} />
+                                                </div>
 
                                                 {/* Label */}
-                                                <div className="flex items-center gap-1.5 rounded bg-emerald-100/80 px-2 py-1 text-xs font-medium text-emerald-900 shadow-sm border border-emerald-500/20 pointer-events-none select-none">
+                                                <div className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-semibold tracking-wide uppercase pointer-events-none select-none"
+                                                    style={{
+                                                        background: "rgba(0,0,0,0.55)",
+                                                        backdropFilter: "blur(8px)",
+                                                        color: "rgb(251,113,133)",
+                                                        border: "1px solid rgba(244,63,94,0.3)",
+                                                        boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+                                                    }}
+                                                >
                                                     <Scissors className="h-3 w-3" />
-                                                    <span>Trim {trimWidgets.findIndex((w) => w.id === widget.id) + 1}</span>
+                                                    <span>Cut {trimWidgets.findIndex((w) => w.id === widget.id) + 1}</span>
                                                 </div>
 
                                                 {/* Right Resize Handle */}
                                                 <div
-                                                    className="absolute right-0 top-0 bottom-0 w-3 cursor-ew-resize hover:bg-emerald-500/20 z-20"
+                                                    className="absolute right-0 top-0 bottom-0 w-3 cursor-ew-resize z-20 flex items-center justify-center"
                                                     onMouseDown={(e) => {
                                                         e.stopPropagation();
                                                         hasMovedDuringDragRef.current = false;
@@ -722,7 +745,9 @@ export function Timeline() {
                                                             initialDuration: widget.duration,
                                                         });
                                                     }}
-                                                />
+                                                >
+                                                    <div className={`w-1 h-6 rounded-full transition-colors duration-200 ${isActive ? "bg-rose-400" : "bg-rose-400/60 group-hover:bg-rose-400"}`} />
+                                                </div>
                                             </div>
                                         );
                                     })}
@@ -734,10 +759,14 @@ export function Timeline() {
                                         return (
                                             <div
                                                 key={widget.id}
-                                                className={`absolute inset-y-0 z-10 flex items-center justify-center rounded-md border-2 bg-sky-300/40 backdrop-blur-sm cursor-move group ${isActive ? "border-sky-300" : "border-sky-500/70"}`}
+                                                className={`absolute inset-y-0 z-10 flex items-center justify-center rounded-lg cursor-move group transition-shadow duration-200 ${isActive ? "shadow-[0_0_0_1px_rgba(139,92,246,0.6),0_0_12px_-2px_rgba(139,92,246,0.3)]" : "shadow-[0_0_0_1px_rgba(139,92,246,0.35)]"}`}
                                                 style={{
                                                     left: `${widget.startTime * pxPerSecond + 4}px`,
                                                     width: `${widget.duration * pxPerSecond}px`,
+                                                    background: isActive
+                                                        ? "linear-gradient(135deg, rgba(139,92,246,0.24) 0%, rgba(167,139,250,0.16) 40%, rgba(96,165,250,0.18) 100%)"
+                                                        : "linear-gradient(135deg, rgba(139,92,246,0.14) 0%, rgba(167,139,250,0.08) 40%, rgba(96,165,250,0.10) 100%)",
+                                                    backdropFilter: "blur(6px)",
                                                 }}
                                                 onMouseDown={(e) => {
                                                     e.stopPropagation();
@@ -756,7 +785,7 @@ export function Timeline() {
                                             >
                                                 {/* Left Resize Handle */}
                                                 <div
-                                                    className="absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize hover:bg-sky-400/20 z-20"
+                                                    className="absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize z-20 flex items-center justify-center"
                                                     onMouseDown={(e) => {
                                                         e.stopPropagation();
                                                         hasMovedDuringDragRef.current = false;
@@ -771,17 +800,27 @@ export function Timeline() {
                                                             initialDuration: widget.duration,
                                                         });
                                                     }}
-                                                />
+                                                >
+                                                    <div className={`w-1 h-6 rounded-full transition-colors duration-200 ${isActive ? "bg-violet-400" : "bg-violet-400/60 group-hover:bg-violet-400"}`} />
+                                                </div>
 
                                                 {/* Label */}
-                                                <div className="flex items-center gap-1.5 rounded bg-sky-100/80 px-2 py-1 text-xs font-medium text-sky-900 shadow-sm border border-sky-500/20 pointer-events-none select-none">
+                                                <div className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-semibold tracking-wide uppercase pointer-events-none select-none"
+                                                    style={{
+                                                        background: "rgba(0,0,0,0.55)",
+                                                        backdropFilter: "blur(8px)",
+                                                        color: "rgb(167,139,250)",
+                                                        border: "1px solid rgba(139,92,246,0.3)",
+                                                        boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+                                                    }}
+                                                >
                                                     <FastForward className="h-3 w-3" />
                                                     <span>{widget.speed}×</span>
                                                 </div>
 
                                                 {/* Right Resize Handle */}
                                                 <div
-                                                    className="absolute right-0 top-0 bottom-0 w-3 cursor-ew-resize hover:bg-sky-400/20 z-20"
+                                                    className="absolute right-0 top-0 bottom-0 w-3 cursor-ew-resize z-20 flex items-center justify-center"
                                                     onMouseDown={(e) => {
                                                         e.stopPropagation();
                                                         hasMovedDuringDragRef.current = false;
@@ -796,7 +835,9 @@ export function Timeline() {
                                                             initialDuration: widget.duration,
                                                         });
                                                     }}
-                                                />
+                                                >
+                                                    <div className={`w-1 h-6 rounded-full transition-colors duration-200 ${isActive ? "bg-violet-400" : "bg-violet-400/60 group-hover:bg-violet-400"}`} />
+                                                </div>
                                             </div>
                                         );
                                     })}
