@@ -88,3 +88,61 @@ def test_token_estimate_from_file_rejects_over_max_duration(monkeypatch, tmp_pat
     )
     assert response.status_code == 400
     assert "exceeds maximum" in response.json()["detail"]
+
+
+def test_export_from_file_rejects_invalid_speed(monkeypatch, tmp_path):
+    import app.main as main
+
+    source_file = tmp_path / "source.mp4"
+    source_file.write_bytes(b"dummy")
+
+    async def fake_save_upload_file(*, file, upload_dir, max_file_size_mb=None):
+        return source_file
+
+    monkeypatch.setattr(main, "save_upload_file", fake_save_upload_file)
+    monkeypatch.setattr(main, "probe_duration_or_cleanup", lambda _: 8.0)
+
+    response = client.post(
+        "/export/from-file",
+        data={"trim_ranges": "[]", "speed": "3x"},
+        files={"file": ("sample.mp4", b"dummy", "video/mp4")},
+    )
+    assert response.status_code == 400
+    assert "Only 1x and 2x are supported" in response.json()["detail"]
+
+
+def test_export_from_file_applies_segment_speed_ranges(monkeypatch, tmp_path):
+    import app.main as main
+
+    source_file = tmp_path / "source.mp4"
+    source_file.write_bytes(b"dummy")
+    rendered_file = tmp_path / "rendered.mp4"
+    rendered_file.write_bytes(b"rendered")
+
+    async def fake_save_upload_file(*, file, upload_dir, max_file_size_mb=None):
+        return source_file
+
+    monkeypatch.setattr(main, "save_upload_file", fake_save_upload_file)
+    monkeypatch.setattr(main, "probe_duration_or_cleanup", lambda _: 8.0)
+    monkeypatch.setattr(main, "get_duration_sec", lambda _: 6.0)
+
+    captured = {}
+
+    def fake_render_segments_with_speed(*, input_path, output_dir, segments):
+        captured["segments"] = segments
+        return rendered_file
+
+    monkeypatch.setattr(main, "render_segments_with_speed", fake_render_segments_with_speed)
+    monkeypatch.setattr(main, "remove_segments_and_stitch", lambda **kwargs: rendered_file)
+    monkeypatch.setattr(main, "extract_range", lambda **kwargs: rendered_file)
+
+    response = client.post(
+        "/export/from-file",
+        data={
+            "trim_ranges": "[]",
+            "speed_ranges": '[{"start":1.0,"end":3.0,"speed":2}]',
+        },
+        files={"file": ("sample.mp4", b"dummy", "video/mp4")},
+    )
+    assert response.status_code == 200
+    assert captured["segments"] == [(0.0, 1.0, 1.0), (1.0, 3.0, 2.0), (3.0, 8.0, 1.0)]

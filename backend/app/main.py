@@ -4,7 +4,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -34,11 +34,13 @@ from .services.media_service import (
 from .services.token_service import estimate_tokens
 from .validators import validate_trim
 from .video_tools import (
+    apply_speed_multiplier,
     extract_range,
     generate_sprite_sheets,
     get_duration_sec,
     remove_segments_and_stitch,
     remove_segment_and_stitch,
+    render_segments_with_speed,
 )
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -77,6 +79,76 @@ def _enforce_max_duration(duration_sec: float) -> None:
                 f"{MAX_VIDEO_DURATION_SEC:.2f}s."
             ),
         )
+
+
+def _merge_ranges(ranges: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    if not ranges:
+        return []
+    ordered = sorted(ranges, key=lambda x: x[0])
+    merged = [ordered[0]]
+    for start_sec, end_sec in ordered[1:]:
+        last_start, last_end = merged[-1]
+        if start_sec <= last_end:
+            merged[-1] = (last_start, max(last_end, end_sec))
+        else:
+            merged.append((start_sec, end_sec))
+    return merged
+
+
+def _build_speed_segments(
+    *,
+    duration_sec: float,
+    trim_ranges: list[tuple[float, float]],
+    speed_ranges: list[tuple[float, float, float]],
+) -> list[tuple[float, float, float]]:
+    keep_ranges: list[tuple[float, float]] = []
+    cursor = 0.0
+    for trim_start, trim_end in trim_ranges:
+        if trim_start > cursor:
+            keep_ranges.append((cursor, trim_start))
+        cursor = max(cursor, trim_end)
+    if cursor < duration_sec:
+        keep_ranges.append((cursor, duration_sec))
+
+    if not trim_ranges:
+        keep_ranges = [(0.0, duration_sec)]
+
+    if not keep_ranges:
+        return []
+
+    if not speed_ranges:
+        return [(start, end, 1.0) for start, end in keep_ranges]
+
+    speed_ranges_sorted = sorted(speed_ranges, key=lambda x: x[0])
+    for i in range(1, len(speed_ranges_sorted)):
+        prev = speed_ranges_sorted[i - 1]
+        current = speed_ranges_sorted[i]
+        if current[0] < prev[1]:
+            raise HTTPException(status_code=400, detail="Overlapping speed ranges are not supported.")
+
+    segments: list[tuple[float, float, float]] = []
+    for keep_start, keep_end in keep_ranges:
+        cursor = keep_start
+        for speed_start, speed_end, speed_value in speed_ranges_sorted:
+            if speed_end <= keep_start:
+                continue
+            if speed_start >= keep_end:
+                break
+
+            overlap_start = max(keep_start, speed_start)
+            overlap_end = min(keep_end, speed_end)
+            if overlap_end <= overlap_start:
+                continue
+
+            if overlap_start > cursor:
+                segments.append((cursor, overlap_start, 1.0))
+            segments.append((overlap_start, overlap_end, speed_value))
+            cursor = overlap_end
+
+        if cursor < keep_end:
+            segments.append((cursor, keep_end, 1.0))
+
+    return [(s, e, sp) for s, e, sp in segments if e - s > 0.01]
 
 
 app = FastAPI(title="Video Editor Agent API", version="0.1.0")
@@ -340,6 +412,10 @@ async def ai_suggest_cuts_from_sprites(payload: SuggestCutsRequest) -> SuggestCu
 async def export_from_file(
     file: UploadFile = File(...),
     trim_ranges: str = Form(default="[]"),
+    speed_ranges: str = Form(default="[]"),
+    speed_multiplier: Optional[float] = Form(default=None),
+    speed_factor: Optional[float] = Form(default=None),
+    speed: Optional[str] = Form(default=None),
 ) -> ExportResponse:
     max_mb = int(os.getenv("MAX_FILE_SIZE_MB", "500"))
     try:
@@ -369,16 +445,22 @@ async def export_from_file(
         normalized_ranges.append((start_sec, end_sec))
 
     normalized_ranges.sort(key=lambda x: x[0])
-    merged_ranges: list[tuple[float, float]] = []
-    for start_sec, end_sec in normalized_ranges:
-        if not merged_ranges:
-            merged_ranges.append((start_sec, end_sec))
-            continue
-        last_start, last_end = merged_ranges[-1]
-        if start_sec <= last_end:
-            merged_ranges[-1] = (last_start, max(last_end, end_sec))
-        else:
-            merged_ranges.append((start_sec, end_sec))
+    merged_ranges = _merge_ranges(normalized_ranges)
+
+    try:
+        raw_speed_ranges = json.loads(speed_ranges)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid speed_ranges JSON: {exc}") from exc
+
+    normalized_speed_ranges: list[tuple[float, float, float]] = []
+    for item in raw_speed_ranges:
+        start_sec = float(min(item["start"], item["end"]))
+        end_sec = float(max(item["start"], item["end"]))
+        speed_value = float(item.get("speed", 1.0))
+        validate_trim(start_sec, end_sec, duration_sec)
+        if speed_value <= 0:
+            raise HTTPException(status_code=400, detail="Speed must be greater than 0.")
+        normalized_speed_ranges.append((start_sec, end_sec, speed_value))
 
     if merged_ranges and merged_ranges[0][0] <= 0 and merged_ranges[-1][1] >= duration_sec:
         # Entire timeline removed after merge.
@@ -386,23 +468,59 @@ async def export_from_file(
         if only_removed:
             raise HTTPException(status_code=400, detail="Cannot remove the entire video range.")
 
+    selected_speed = 1.0
+    if speed_multiplier is not None:
+        selected_speed = float(speed_multiplier)
+    elif speed_factor is not None:
+        selected_speed = float(speed_factor)
+    elif speed is not None:
+        speed_value = str(speed).strip().lower().removesuffix("x")
+        try:
+            selected_speed = float(speed_value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid speed value.") from exc
+
+    if selected_speed not in {1.0, 2.0}:
+        raise HTTPException(status_code=400, detail="Only 1x and 2x are supported in v0.")
+
     try:
         try:
-            if merged_ranges:
-                output_path = remove_segments_and_stitch(
+            speed_segments = _build_speed_segments(
+                duration_sec=duration_sec,
+                trim_ranges=merged_ranges,
+                speed_ranges=normalized_speed_ranges,
+            )
+            if speed_segments and any(abs(seg[2] - 1.0) > 1e-6 for seg in speed_segments):
+                output_path = render_segments_with_speed(
                     input_path=input_path,
                     output_dir=OUTPUT_DIR,
-                    duration_sec=duration_sec,
-                    trim_ranges=merged_ranges,
+                    segments=speed_segments,
                 )
             else:
-                # No trims: produce a normal export copy by re-encoding the full source range.
-                output_path = extract_range(
-                    input_path=input_path,
+                if merged_ranges:
+                    output_path = remove_segments_and_stitch(
+                        input_path=input_path,
+                        output_dir=OUTPUT_DIR,
+                        duration_sec=duration_sec,
+                        trim_ranges=merged_ranges,
+                    )
+                else:
+                    # No trims: produce a normal export copy by re-encoding the full source range.
+                    output_path = extract_range(
+                        input_path=input_path,
+                        output_dir=OUTPUT_DIR,
+                        start_sec=0.0,
+                        end_sec=duration_sec,
+                    )
+
+            if selected_speed > 1.0 and not normalized_speed_ranges:
+                speed_output_path = apply_speed_multiplier(
+                    input_path=output_path,
                     output_dir=OUTPUT_DIR,
-                    start_sec=0.0,
-                    end_sec=duration_sec,
+                    speed_multiplier=selected_speed,
                 )
+                output_path.unlink(missing_ok=True)
+                output_path = speed_output_path
             # Sanity check output can be probed.
             _ = get_duration_sec(output_path)
         except HTTPException:

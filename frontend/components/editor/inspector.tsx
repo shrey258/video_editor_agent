@@ -70,7 +70,7 @@ const PLACEHOLDER_MESSAGES: ChatMessage[] = [
 const MAX_VIDEO_DURATION_SEC = 10;
 
 export function Inspector() {
-    const { sourceFile, duration, trimRanges, setTrimRanges } = useVideo();
+    const { sourceFile, duration, trimRanges, speedRanges, setTrimRanges } = useVideo();
     const [messages, setMessages] = useState<ChatMessage[]>(PLACEHOLDER_MESSAGES);
     const [input, setInput] = useState("");
     const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -282,6 +282,11 @@ export function Inspector() {
         const form = new FormData();
         form.append("file", sourceFile);
         form.append("trim_ranges", JSON.stringify(trimRanges));
+        form.append("speed_ranges", JSON.stringify(speedRanges));
+        if (speedRanges.length === 0) {
+            form.append("speed_multiplier", "1");
+            form.append("speed", "1x");
+        }
 
         try {
             const response = await fetch("/api/export/from-file", {
@@ -347,6 +352,9 @@ export function Inspector() {
                     <Download className="mr-2 h-4 w-4" />
                     {isExporting ? "Exporting..." : "Export Video"}
                 </Button>
+                <p className="mt-1 text-center text-[11px] text-zinc-500">
+                    Export speed: {speedRanges.some((range) => range.speed > 1) ? "2x" : "1x"}
+                </p>
                 {exportResult ? (
                     <a
                         href={exportResult.output_url}

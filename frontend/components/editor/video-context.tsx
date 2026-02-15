@@ -23,6 +23,7 @@ export function VideoProvider({ children }: { children: ReactNode }) {
   const volume = useVideoStore((s) => s.volume);
   const duration = useVideoStore((s) => s.duration);
   const trimRanges = useVideoStore((s) => s.trimRanges);
+  const speedRanges = useVideoStore((s) => s.speedRanges);
   const hasTrimmedGap = trimRanges.length > 0;
 
   const setCurrentTime = useVideoStore((s) => s.setCurrentTime);
@@ -51,6 +52,17 @@ export function VideoProvider({ children }: { children: ReactNode }) {
       return nextTime;
     };
 
+    const enforcePlaybackRate = (time: number) => {
+      if (speedRanges.length === 0) return;
+      const activeRange = speedRanges.find(
+        (r) => time >= r.start && time < r.end
+      );
+      const targetRate = activeRange ? activeRange.speed : 1;
+      if (video.playbackRate !== targetRate) {
+        video.playbackRate = targetRate;
+      }
+    };
+
     const toDisplayTime = (time: number) => {
       if (hasTrimmedGap) {
         const nearRangeEnd = trimRanges.find(
@@ -63,6 +75,7 @@ export function VideoProvider({ children }: { children: ReactNode }) {
 
     const onTimeUpdate = () => {
       const nextTime = enforceTrimSkip();
+      enforcePlaybackRate(nextTime);
       setCurrentTime(toDisplayTime(nextTime));
     };
 
@@ -70,6 +83,7 @@ export function VideoProvider({ children }: { children: ReactNode }) {
     const updateFrame = () => {
       if (isPlaying) {
         const nextTime = enforceTrimSkip();
+        enforcePlaybackRate(nextTime);
         setCurrentTime(toDisplayTime(nextTime));
         rafId = requestAnimationFrame(updateFrame);
       }
@@ -83,9 +97,15 @@ export function VideoProvider({ children }: { children: ReactNode }) {
       setDuration(video.duration);
       setTrimRanges([]);
     };
-    const onEnded = () => setIsPlaying(false);
+    const onEnded = () => {
+      video.playbackRate = 1;
+      setIsPlaying(false);
+    };
     const onPlay = () => setIsPlaying(true);
-    const onPause = () => setIsPlaying(false);
+    const onPause = () => {
+      video.playbackRate = 1;
+      setIsPlaying(false);
+    };
 
     video.addEventListener("timeupdate", onTimeUpdate);
     video.addEventListener("loadedmetadata", onLoadedMetadata);
@@ -107,6 +127,7 @@ export function VideoProvider({ children }: { children: ReactNode }) {
     isPlaying,
     hasTrimmedGap,
     trimRanges,
+    speedRanges,
     duration,
     setCurrentTime,
     setDuration,

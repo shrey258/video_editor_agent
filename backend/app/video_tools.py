@@ -236,6 +236,117 @@ def remove_segments_and_stitch(
     return output_path
 
 
+def _build_atempo_chain(speed: float) -> str:
+    # FFmpeg atempo supports [0.5, 2.0] per stage; chain when outside range.
+    factors: list[float] = []
+    remaining = float(speed)
+    while remaining > 2.0:
+        factors.append(2.0)
+        remaining /= 2.0
+    while remaining < 0.5:
+        factors.append(0.5)
+        remaining /= 0.5
+    factors.append(remaining)
+    return ",".join(f"atempo={max(0.5, min(2.0, f)):.6f}" for f in factors)
+
+
+def render_segments_with_speed(
+    *,
+    input_path: Path,
+    output_dir: Path,
+    segments: list[tuple[float, float, float]],
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if not segments:
+        raise RuntimeError("No segments to render.")
+
+    output_path = output_dir / f"{uuid4()}.mp4"
+    include_audio = has_audio_stream(input_path)
+
+    filters: list[str] = []
+    for i, (start_sec, end_sec, speed) in enumerate(segments):
+        speed_value = max(0.25, float(speed))
+        v_chain = (
+            f"[0:v]trim=start={start_sec:.3f}:end={end_sec:.3f},"
+            f"setpts=PTS-STARTPTS,setpts=PTS/{speed_value:.6f}[v{i}]"
+        )
+        filters.append(v_chain)
+
+        if include_audio:
+            a_chain = (
+                f"[0:a]atrim=start={start_sec:.3f}:end={end_sec:.3f},"
+                f"asetpts=PTS-STARTPTS,{_build_atempo_chain(speed_value)}[a{i}]"
+            )
+            filters.append(a_chain)
+
+    concat_inputs = "".join(
+        f"[v{i}]{f'[a{i}]' if include_audio else ''}" for i in range(len(segments))
+    )
+    if include_audio:
+        filters.append(f"{concat_inputs}concat=n={len(segments)}:v=1:a=1[v][a]")
+    else:
+        filters.append(f"{concat_inputs}concat=n={len(segments)}:v=1:a=0[v]")
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(input_path),
+        "-filter_complex",
+        ";".join(filters),
+        "-map",
+        "[v]",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "18",
+    ]
+    if include_audio:
+        cmd.extend(["-map", "[a]", "-c:a", "aac"])
+
+    cmd.append(str(output_path))
+    _run(cmd)
+    return output_path
+
+
+def apply_speed_multiplier(
+    *,
+    input_path: Path,
+    output_dir: Path,
+    speed_multiplier: float,
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{uuid4()}.mp4"
+    multiplier = float(speed_multiplier)
+    if multiplier <= 0:
+        raise RuntimeError("speed_multiplier must be greater than 0.")
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(input_path),
+        "-filter:v",
+        f"setpts=PTS/{multiplier}",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "18",
+    ]
+
+    if has_audio_stream(input_path):
+        # v0 supports 1x and 2x only; one atempo stage is enough.
+        cmd.extend(["-filter:a", f"atempo={multiplier}", "-c:a", "aac"])
+
+    cmd.append(str(output_path))
+    _run(cmd)
+    return output_path
+
+
 def generate_sprite_sheets(
     input_path: Path,
     output_dir: Path,

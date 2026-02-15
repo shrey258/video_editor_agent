@@ -50,4 +50,39 @@ describe("video-store", () => {
     state.seek(3.8);
     expect(video.currentTime).toBeGreaterThan(4);
   });
+
+  it("normalizes and clamps speed ranges", () => {
+    resetStore();
+    const state = useVideoStore.getState();
+    state.setSpeedRanges([
+      { start: 3, end: 1, speed: 2 },   // inverted start/end
+      { start: 8, end: 15, speed: 3 },  // exceeds duration (10s)
+      { start: 5, end: 5.05, speed: 2 }, // too short (< 0.1s)
+    ]);
+
+    const ranges = useVideoStore.getState().speedRanges;
+    expect(ranges).toHaveLength(2);
+    // Inverted range normalized
+    expect(ranges[0].start).toBeCloseTo(1, 2);
+    expect(ranges[0].end).toBeCloseTo(3, 2);
+    expect(ranges[0].speed).toBe(2);
+    // Clamped to duration
+    expect(ranges[1].start).toBeCloseTo(8, 2);
+    expect(ranges[1].end).toBeCloseTo(10, 2);
+    expect(ranges[1].speed).toBe(3);
+  });
+
+  it("clamps speed values to [0.25, 16]", () => {
+    resetStore();
+    const state = useVideoStore.getState();
+    state.setSpeedRanges([
+      { start: 0, end: 2, speed: 0.1 },   // below min
+      { start: 3, end: 5, speed: 20 },    // above max
+    ]);
+
+    const ranges = useVideoStore.getState().speedRanges;
+    expect(ranges).toHaveLength(2);
+    expect(ranges[0].speed).toBe(0.25);
+    expect(ranges[1].speed).toBe(16);
+  });
 });

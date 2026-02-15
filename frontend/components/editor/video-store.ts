@@ -4,6 +4,7 @@ import type React from "react";
 import { create } from "zustand";
 
 export type TrimRange = { start: number; end: number };
+export type SpeedRange = { start: number; end: number; speed: number };
 
 export interface VideoStoreState {
   videoSrc: string | null;
@@ -17,6 +18,7 @@ export interface VideoStoreState {
   trimStart: number;
   trimEnd: number;
   trimRanges: TrimRange[];
+  speedRanges: SpeedRange[];
   hasVideo: boolean;
 }
 
@@ -32,6 +34,7 @@ export interface VideoStoreActions {
   setTrimEnd: (t: number) => void;
   setTrimRange: (start: number, end: number) => void;
   setTrimRanges: (ranges: TrimRange[]) => void;
+  setSpeedRanges: (ranges: SpeedRange[]) => void;
   requestFullscreen: () => void;
   setCurrentTime: (time: number) => void;
   setDuration: (duration: number) => void;
@@ -43,6 +46,8 @@ export type VideoStore = VideoStoreState & VideoStoreActions;
 const ACCEPTED_TYPES = ["video/mp4", "video/quicktime", "video/webm"];
 const EXIT_EPSILON_SEC = 0.02;
 const MIN_TRIM_DURATION_SEC = 0.05;
+const MIN_SPEED_DURATION_SEC = 0.1;
+const DEFAULT_SPEED = 2;
 
 function normalizeTrimRanges(
   ranges: TrimRange[],
@@ -71,6 +76,20 @@ function normalizeTrimRanges(
   return merged;
 }
 
+function normalizeSpeedRanges(
+  ranges: SpeedRange[],
+  clamp: (time: number) => number
+): SpeedRange[] {
+  return ranges
+    .map((r) => ({
+      start: clamp(Math.min(r.start, r.end)),
+      end: clamp(Math.max(r.start, r.end)),
+      speed: Math.max(0.25, Math.min(16, r.speed || DEFAULT_SPEED)),
+    }))
+    .filter((r) => r.end - r.start > MIN_SPEED_DURATION_SEC)
+    .sort((a, b) => a.start - b.start);
+}
+
 function makeClamp(duration: number) {
   return (time: number) => {
     if (duration <= 0) return Math.max(0, time);
@@ -92,6 +111,7 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
   trimStart: 0,
   trimEnd: 0,
   trimRanges: [],
+  speedRanges: [],
   hasVideo: false,
 
   loadFile: (file) => {
@@ -109,6 +129,7 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
       trimStart: 0,
       trimEnd: 0,
       trimRanges: [],
+      speedRanges: [],
     });
   },
 
@@ -231,6 +252,12 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
     } else {
       void video.requestFullscreen();
     }
+  },
+
+  setSpeedRanges: (ranges) => {
+    const clamp = makeClamp(get().duration);
+    const normalized = normalizeSpeedRanges(ranges, clamp);
+    set({ speedRanges: normalized });
   },
 
   setCurrentTime: (time) => set({ currentTime: time }),
