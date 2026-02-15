@@ -47,45 +47,58 @@ function areRangesEquivalent(
     });
 }
 
-/** Generate ruler tick marks with major and minor intervals */
+/** Generate ruler tick marks with major, minor, and micro intervals */
 function generateTicks(visibleDuration: number, zoom: number) {
-    let majorInterval = 1;
-    let minorSubdivisions = 0;
+    let majorInterval: number;
+    let minorInterval: number;
+    let microInterval: number;
 
     if (zoom <= 0.25) {
         majorInterval = 10;
-        minorSubdivisions = 0;
+        minorInterval = 5;
+        microInterval = 1;
     } else if (zoom <= 0.5) {
         majorInterval = 5;
-        minorSubdivisions = 0;
+        minorInterval = 1;
+        microInterval = 0.5;
     } else if (zoom <= 1) {
-        majorInterval = 2;
-        minorSubdivisions = 4; // every 0.5s
+        majorInterval = 1;
+        minorInterval = 0.5;
+        microInterval = 0.25;
     } else if (zoom <= 2) {
         majorInterval = 1;
-        minorSubdivisions = 4; // every 0.25s
+        minorInterval = 0.25;
+        microInterval = 0.1;
     } else {
-        majorInterval = 1;
-        minorSubdivisions = 9; // every 0.1s
+        majorInterval = 0.5;
+        minorInterval = 0.1;
+        microInterval = 0.05;
     }
 
     const majorTicks: number[] = [];
     const minorTicks: number[] = [];
+    const microTicks: number[] = [];
 
-    for (let t = 0; t <= visibleDuration; t += majorInterval) {
-        majorTicks.push(t);
-        if (minorSubdivisions > 0) {
-            const step = majorInterval / (minorSubdivisions + 1);
-            for (let i = 1; i <= minorSubdivisions; i++) {
-                const candidate = t + i * step;
-                if (candidate <= visibleDuration) {
-                    minorTicks.push(candidate);
-                }
-            }
+    const EPS = 0.0001;
+    for (let t = 0; t <= visibleDuration + EPS; t += microInterval) {
+        const time = Math.round(t * 10000) / 10000; // avoid float drift
+        if (time > visibleDuration) break;
+        const isMajor =
+            Math.abs(time % majorInterval) < EPS ||
+            Math.abs(time % majorInterval - majorInterval) < EPS;
+        const isMinor =
+            Math.abs(time % minorInterval) < EPS ||
+            Math.abs(time % minorInterval - minorInterval) < EPS;
+        if (isMajor) {
+            majorTicks.push(time);
+        } else if (isMinor) {
+            minorTicks.push(time);
+        } else {
+            microTicks.push(time);
         }
     }
 
-    return { majorTicks, minorTicks };
+    return { majorTicks, minorTicks, microTicks };
 }
 
 function formatRulerTime(seconds: number, zoom: number): string {
@@ -594,29 +607,74 @@ export function Timeline() {
                         {/* Track */}
                         <div className="relative px-6 py-3 flex-1 flex flex-col">
                             {/* Track bar */}
-                            <div className="relative flex-1 rounded-md bg-zinc-800/60 mt-2 select-none">
+                            <div
+                                className="relative flex-1 rounded-lg mt-2 select-none"
+                                style={{
+                                    background: "linear-gradient(180deg, rgba(39,39,42,0.7) 0%, rgba(24,24,27,0.8) 100%)",
+                                    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04), inset 0 -1px 0 rgba(0,0,0,0.3), 0 1px 3px rgba(0,0,0,0.4)",
+                                }}
+                            >
                                 {/* Video clip block */}
                                 {hasVideo && (
                                     <div
-                                        className="absolute inset-y-0 left-0 overflow-hidden rounded-md border-y border-x-4 border-emerald-500 bg-gradient-to-r from-emerald-700/30 via-emerald-600/20 to-emerald-700/30"
-                                        style={{ width: `${videoTrackWidth + 8}px` }}
+                                        className="absolute inset-y-0 left-0 overflow-visible rounded-lg"
+                                        style={{
+                                            width: `${videoTrackWidth}px`,
+                                            background: "linear-gradient(180deg, rgba(16,185,129,0.12) 0%, rgba(16,185,129,0.06) 40%, rgba(16,185,129,0.10) 100%)",
+                                            boxShadow: "inset 0 1px 0 rgba(52,211,153,0.15), inset 0 -1px 0 rgba(52,211,153,0.08)",
+                                        }}
                                     >
-                                        {/* Top line for ticks */}
-                                        <div className="absolute top-0 left-0 right-0 h-px bg-[#D1D1D1]/20" />
+                                        {/* Left edge cap — outside the frame */}
+                                        <div
+                                            className="absolute top-0 bottom-0 w-[5px] rounded-l-lg"
+                                            style={{
+                                                left: "-5px",
+                                                background: "linear-gradient(180deg, rgb(52,211,153) 0%, rgb(16,185,129) 50%, rgb(5,150,105) 100%)",
+                                                boxShadow: "inset -1px 0 0 rgba(255,255,255,0.15)",
+                                            }}
+                                        />
+                                        {/* Right edge cap — outside the frame */}
+                                        <div
+                                            className="absolute top-0 bottom-0 w-[5px] rounded-r-lg"
+                                            style={{
+                                                right: "-5px",
+                                                background: "linear-gradient(180deg, rgb(52,211,153) 0%, rgb(16,185,129) 50%, rgb(5,150,105) 100%)",
+                                                boxShadow: "inset 1px 0 0 rgba(255,255,255,0.15)",
+                                            }}
+                                        />
 
-                                        {/* Minor Ticks */}
-                                        {ticks.minorTicks.map((t) => (
+                                        {/* Subtle top border line */}
+                                        <div className="absolute top-0 left-0 right-0 h-px bg-emerald-400/20" />
+                                        {/* Subtle bottom border line */}
+                                        <div className="absolute bottom-0 left-0 right-0 h-px bg-emerald-400/10" />
+
+                                        {/* Micro Ticks — finest tier */}
+                                        {ticks.microTicks.map((t) => (
                                             <div
-                                                key={`minor-${t}`}
-                                                className="absolute top-0 w-px bg-[#D1D1D1]"
+                                                key={`micro-${t}`}
+                                                className="absolute top-0 w-px"
                                                 style={{
                                                     left: `${t * pxPerSecond}px`,
-                                                    height: "8px",
+                                                    height: "10px",
+                                                    background: "rgba(161,161,170,0.22)",
                                                 }}
                                             />
                                         ))}
 
-                                        {/* Major Ticks & Labels */}
+                                        {/* Minor Ticks — medium tier */}
+                                        {ticks.minorTicks.map((t) => (
+                                            <div
+                                                key={`minor-${t}`}
+                                                className="absolute top-0 w-px"
+                                                style={{
+                                                    left: `${t * pxPerSecond}px`,
+                                                    height: "18px",
+                                                    background: "rgba(161,161,170,0.4)",
+                                                }}
+                                            />
+                                        ))}
+
+                                        {/* Major Ticks & Labels — tallest tier */}
                                         {ticks.majorTicks.map((t) => (
                                             <div
                                                 key={`major-${t}`}
@@ -625,13 +683,16 @@ export function Timeline() {
                                             >
                                                 {/* Major Tick */}
                                                 <div
-                                                    className="w-px bg-[#D1D1D1]"
-                                                    style={{ height: "15px" }}
+                                                    className="w-px"
+                                                    style={{
+                                                        height: "28px",
+                                                        background: "linear-gradient(180deg, rgba(161,161,170,0.8) 0%, rgba(161,161,170,0.25) 100%)",
+                                                    }}
                                                 />
                                                 {/* Label */}
                                                 <span
-                                                    className="absolute top-4 -translate-x-1/2 whitespace-nowrap font-sans text-[10pt] font-medium text-[#666666]"
-                                                    style={{ color: "#666666" }}
+                                                    className="absolute top-[30px] -translate-x-1/2 whitespace-nowrap font-mono text-[9px] font-medium tracking-wider"
+                                                    style={{ color: "rgba(161,161,170,0.6)" }}
                                                 >
                                                     {formatRulerTime(t, zoom)}
                                                 </span>
@@ -647,7 +708,7 @@ export function Timeline() {
                                             key={`mask-${widget.id}`}
                                             className="absolute inset-y-0 z-[9] rounded-md bg-red-950/30"
                                             style={{
-                                                left: `${widget.startTime * pxPerSecond + 4}px`,
+                                                left: `${widget.startTime * pxPerSecond}px`,
                                                 width: `${widget.duration * pxPerSecond}px`,
                                                 backgroundImage: "repeating-linear-gradient(135deg, transparent, transparent 4px, rgba(239,68,68,0.08) 4px, rgba(239,68,68,0.08) 5px)",
                                             }}
@@ -663,7 +724,7 @@ export function Timeline() {
                                                 key={widget.id}
                                                 className={`absolute inset-y-0 z-10 flex items-center justify-center rounded-lg cursor-move group transition-shadow duration-200 ${isActive ? "shadow-[0_0_0_1px_rgba(244,63,94,0.6),0_0_12px_-2px_rgba(244,63,94,0.3)]" : "shadow-[0_0_0_1px_rgba(244,63,94,0.35)]"}`}
                                                 style={{
-                                                    left: `${widget.startTime * pxPerSecond + 4}px`,
+                                                    left: `${widget.startTime * pxPerSecond}px`,
                                                     width: `${widget.duration * pxPerSecond}px`,
                                                     background: isActive
                                                         ? "linear-gradient(135deg, rgba(244,63,94,0.25) 0%, rgba(251,113,133,0.18) 50%, rgba(244,63,94,0.22) 100%)"
@@ -761,7 +822,7 @@ export function Timeline() {
                                                 key={widget.id}
                                                 className={`absolute inset-y-0 z-10 flex items-center justify-center rounded-lg cursor-move group transition-shadow duration-200 ${isActive ? "shadow-[0_0_0_1px_rgba(139,92,246,0.6),0_0_12px_-2px_rgba(139,92,246,0.3)]" : "shadow-[0_0_0_1px_rgba(139,92,246,0.35)]"}`}
                                                 style={{
-                                                    left: `${widget.startTime * pxPerSecond + 4}px`,
+                                                    left: `${widget.startTime * pxPerSecond}px`,
                                                     width: `${widget.duration * pxPerSecond}px`,
                                                     background: isActive
                                                         ? "linear-gradient(135deg, rgba(139,92,246,0.24) 0%, rgba(167,139,250,0.16) 40%, rgba(96,165,250,0.18) 100%)"
@@ -850,7 +911,7 @@ export function Timeline() {
                                             setIsDraggingPlayhead(true);
                                         }}
                                         className="absolute bottom-0 top-[-10px] z-20 flex flex-col items-center cursor-grab active:cursor-grabbing -translate-x-1/2 pointer-events-auto"
-                                        style={{ left: `${currentTime * pxPerSecond + 4}px` }}
+                                        style={{ left: `${currentTime * pxPerSecond}px` }}
                                     >
                                         {/* Head triangle */}
                                         <div
