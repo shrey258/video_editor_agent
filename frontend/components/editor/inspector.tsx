@@ -41,10 +41,13 @@ type TokenEstimateResponse = {
 };
 
 type CutSuggestion = {
+    action: "trim_video" | "speed_video";
+    operation: "remove_segment" | "extract_range" | "apply_speed_range";
     start_sec: number;
     end_sec: number;
     reason: string;
     confidence: number;
+    speed_multiplier?: number | null;
 };
 
 type SuggestCutsResponse = {
@@ -70,7 +73,7 @@ const PLACEHOLDER_MESSAGES: ChatMessage[] = [
 const MAX_VIDEO_DURATION_SEC = 10;
 
 export function Inspector() {
-    const { sourceFile, duration, trimRanges, speedRanges, setTrimRanges } = useVideo();
+    const { sourceFile, duration, trimRanges, speedRanges, setTrimRanges, setSpeedRanges } = useVideo();
     const [messages, setMessages] = useState<ChatMessage[]>(PLACEHOLDER_MESSAGES);
     const [input, setInput] = useState("");
     const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -125,7 +128,7 @@ export function Inspector() {
                 {
                     id: (Date.now() + 1).toString(),
                     role: "assistant",
-                    content: "Generate sprites first, then I can suggest cut ranges.",
+                    content: "Generate sprites first, then I can suggest trim/speed edit ranges.",
                 },
             ]);
             return;
@@ -147,17 +150,26 @@ export function Inspector() {
             const data = (await response.json()) as SuggestCutsResponse | { detail?: string };
             if (!response.ok) {
                 const message = "detail" in data ? data.detail : undefined;
-                throw new Error(message || "Failed to suggest cuts.");
+                throw new Error(message || "Failed to suggest edits.");
             }
             const result = data as SuggestCutsResponse;
             setSuggestions(result.suggestions);
-            setTrimRanges(result.suggestions.map((s) => ({ start: s.start_sec, end: s.end_sec })));
+            const trimSuggestions = result.suggestions.filter((s) => s.action === "trim_video");
+            const speedSuggestions = result.suggestions.filter((s) => s.action === "speed_video");
+            setTrimRanges(trimSuggestions.map((s) => ({ start: s.start_sec, end: s.end_sec })));
+            setSpeedRanges(
+                speedSuggestions.map((s) => ({
+                    start: s.start_sec,
+                    end: s.end_sec,
+                    speed: s.speed_multiplier && s.speed_multiplier > 0 ? s.speed_multiplier : 2,
+                }))
+            );
             setMessages((prev) => [
                 ...prev,
                 {
                     id: (Date.now() + 1).toString(),
                     role: "assistant",
-                    content: `Suggested ${result.suggestions.length} cut(s) via ${result.model}. Applied to timeline.`,
+                    content: `Applied ${trimSuggestions.length} trim and ${speedSuggestions.length} speed suggestion(s) via ${result.model}.`,
                 },
             ]);
         } catch (error) {
@@ -169,7 +181,7 @@ export function Inspector() {
                     content:
                         error instanceof Error
                             ? error.message
-                            : "Failed to suggest cuts.",
+                            : "Failed to suggest edits.",
                 },
             ]);
         } finally {
@@ -526,6 +538,9 @@ export function Inspector() {
                                         key={`${s.start_sec}-${s.end_sec}-${idx}`}
                                         className="rounded border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[11px] text-zinc-300"
                                     >
+                                        <span className="mr-2 rounded border border-white/[0.08] bg-white/[0.05] px-1 py-px text-[10px] uppercase tracking-wide text-zinc-400">
+                                            {s.action === "speed_video" ? `Speed ${s.speed_multiplier ?? 2}x` : "Trim"}
+                                        </span>
                                         <span className="font-mono text-zinc-100">
                                             {s.start_sec.toFixed(2)}s → {s.end_sec.toFixed(2)}s
                                         </span>

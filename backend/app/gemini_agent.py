@@ -22,10 +22,25 @@ def _extract_json(text: str) -> dict:
 
 def _regex_fallback(prompt: str) -> dict:
     lowered = prompt.lower()
-    m = re.search(r"(?:from|between)\s+([0-9:.]+)\s+(?:to|and|-)\s+([0-9:.]+)", lowered)
-    if not m:
+    range_match = re.search(r"(?:from|between)\s+([0-9:.]+)\s+(?:to|and|-)\s+([0-9:.]+)", lowered)
+    speed_hint = bool(re.search(r"\b(speed\s*up|faster|fast-forward|accelerat(?:e|ed|ing)|\d+(?:\.\d+)?x)\b", lowered))
+
+    if speed_hint and range_match:
+        start_raw, end_raw = range_match.groups()
+        multiplier_match = re.search(r"(\d+(?:\.\d+)?)\s*x", lowered)
+        speed_multiplier = float(multiplier_match.group(1)) if multiplier_match else 2.0
+        return {
+            "action": "speed_video",
+            "operation": "apply_speed_range",
+            "start_sec": parse_time_like(start_raw),
+            "end_sec": parse_time_like(end_raw),
+            "speed_multiplier": speed_multiplier,
+            "reason": "Parsed speed range from explicit prompt.",
+        }
+
+    if not range_match:
         raise ValueError("Could not parse prompt without Gemini API key.")
-    start_raw, end_raw = m.groups()
+    start_raw, end_raw = range_match.groups()
     operation = "extract_range" if "keep only" in lowered else "remove_segment"
     return {
         "action": "trim_video",
@@ -39,7 +54,9 @@ def _regex_fallback(prompt: str) -> dict:
 async def parse_intent(prompt: str, duration_sec: float) -> dict:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        return _regex_fallback(prompt)
+        fallback = _regex_fallback(prompt)
+        logger.info("PARSE_INTENT_FALLBACK_RESPONSE %s", fallback)
+        return fallback
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -47,10 +64,11 @@ async def parse_intent(prompt: str, duration_sec: float) -> dict:
     )
     instructions = (
         "Return JSON only with this schema: "
-        '{"action":"trim_video","operation":"remove_segment|extract_range","start_sec":number,"end_sec":number,"reason":string}. '
+        '{"action":"trim_video|speed_video","operation":"remove_segment|extract_range|apply_speed_range","start_sec":number,"end_sec":number,"speed_multiplier":number,"reason":string}. '
         f"Times must be within 0 and {duration_sec:.3f}. "
         "Interpretation rules: if user says trim/cut/delete/remove from X to Y, set operation=remove_segment. "
-        "If user says keep only/highlight/extract from X to Y, set operation=extract_range."
+        "If user says keep only/highlight/extract from X to Y, set operation=extract_range. "
+        "If user says speed up/faster/2x from X to Y, set action=speed_video and operation=apply_speed_range."
     )
     payload = {
         "contents": [{"parts": [{"text": f"{instructions}\nUser prompt: {prompt}"}]}],
@@ -62,27 +80,60 @@ async def parse_intent(prompt: str, duration_sec: float) -> dict:
         response.raise_for_status()
         data = response.json()
     text = data["candidates"][0]["content"]["parts"][0]["text"]
+    logger.info("GEMINI_RAW_PARSE_INTENT_RESPONSE %s", text)
     parsed = _extract_json(text)
-    return {
-        "action": parsed.get("action", "trim_video"),
-        "operation": parsed.get("operation", "remove_segment"),
+    action = parsed.get("action", "trim_video")
+    operation = parsed.get("operation")
+    if not operation:
+        operation = "apply_speed_range" if action == "speed_video" else "remove_segment"
+
+    speed_multiplier = parsed.get("speed_multiplier", 2.0)
+    try:
+        speed_multiplier = float(speed_multiplier)
+    except Exception:
+        speed_multiplier = 2.0
+
+    result = {
+        "action": action,
+        "operation": operation,
         "start_sec": parse_time_like(parsed["start_sec"]),
         "end_sec": parse_time_like(parsed["end_sec"]),
+        "speed_multiplier": speed_multiplier,
         "reason": parsed.get("reason", "Parsed by Gemini."),
     }
+    logger.info("PARSE_INTENT_NORMALIZED_RESPONSE %s", result)
+    return result
 
 
 def _fallback_suggest_cuts(prompt: str, duration_sec: float) -> list[dict]:
     lowered = prompt.lower()
     matches = re.findall(r"(?:from|between)\s+([0-9:.]+)\s+(?:to|and|-)\s+([0-9:.]+)", lowered)
+    speed_hint = bool(re.search(r"\b(speed\s*up|faster|fast-forward|accelerat(?:e|ed|ing)|\d+(?:\.\d+)?x)\b", lowered))
+    multiplier_match = re.search(r"(\d+(?:\.\d+)?)\s*x", lowered)
+    speed_multiplier = float(multiplier_match.group(1)) if multiplier_match else 2.0
     if matches:
         suggestions = []
         for start_raw, end_raw in matches:
             start_sec = parse_time_like(start_raw)
             end_sec = parse_time_like(end_raw)
             if 0 <= start_sec < end_sec <= duration_sec:
+                if speed_hint:
+                    suggestions.append(
+                        {
+                            "action": "speed_video",
+                            "operation": "apply_speed_range",
+                            "start_sec": start_sec,
+                            "end_sec": end_sec,
+                            "speed_multiplier": speed_multiplier,
+                            "reason": "Parsed explicit speed range from prompt.",
+                            "confidence": 0.9,
+                        }
+                    )
+                    continue
                 suggestions.append(
                     {
+                        "action": "trim_video",
+                        "operation": "remove_segment",
                         "start_sec": start_sec,
                         "end_sec": end_sec,
                         "reason": "Parsed explicit range from prompt.",
@@ -102,6 +153,8 @@ def _fallback_suggest_cuts(prompt: str, duration_sec: float) -> list[dict]:
             if end_sec - start_sec >= 0.3:
                 suggestions.append(
                     {
+                        "action": "trim_video",
+                        "operation": "remove_segment",
                         "start_sec": round(start_sec, 3),
                         "end_sec": round(end_sec, 3),
                         "reason": "Fallback recommendation window.",
@@ -148,15 +201,17 @@ async def suggest_cuts_from_sprites(
 
     instructions = (
         "You are an editing planner. Return strict JSON only.\n"
-        "Schema: {\"suggestions\":[{\"start_sec\":number,\"end_sec\":number,\"reason\":string,\"confidence\":number}]}\n"
+        "Schema: {\"suggestions\":[{\"action\":\"trim_video|speed_video\",\"operation\":\"remove_segment|extract_range|apply_speed_range\",\"start_sec\":number,\"end_sec\":number,\"speed_multiplier\":number,\"reason\":string,\"confidence\":number}]}\n"
         f"Video duration: {duration_sec:.3f}s\n"
         f"Sprite analysis summary: interval={sprite_interval_sec}s, total_frames={total_frames}, sheets={sheets_count}\n"
         "Rules:\n"
         "- Produce 0 to 8 suggestions.\n"
         "- Each suggestion must satisfy 0 <= start_sec < end_sec <= duration.\n"
         "- Confidence range 0..1\n"
-        "- If prompt asks recommendation, infer likely removable boring/dead sections.\n"
+        "- If prompt asks recommendation, infer likely removable boring/dead sections or speed-up opportunities.\n"
         "- If prompt gives explicit ranges, prioritize those.\n"
+        "- Use speed_video/apply_speed_range when user asks speed-up/faster playback.\n"
+        "- For speed suggestions, include speed_multiplier (default 2.0 if unclear).\n"
     )
 
     payload = {
@@ -182,17 +237,35 @@ async def suggest_cuts_from_sprites(
             continue
         if not (0 <= start_sec < end_sec <= duration_sec):
             continue
+        action = str(item.get("action", "trim_video"))
+        if action not in {"trim_video", "speed_video"}:
+            action = "trim_video"
+        operation_default = "apply_speed_range" if action == "speed_video" else "remove_segment"
+        operation = str(item.get("operation", operation_default))
+        if operation not in {"remove_segment", "extract_range", "apply_speed_range"}:
+            operation = operation_default
         confidence_raw = item.get("confidence", 0.5)
         try:
             confidence = float(confidence_raw)
         except Exception:
             confidence = 0.5
+        speed_multiplier = None
+        if action == "speed_video":
+            raw_multiplier = item.get("speed_multiplier", 2.0)
+            try:
+                speed_multiplier = float(raw_multiplier)
+            except Exception:
+                speed_multiplier = 2.0
+            speed_multiplier = max(0.25, min(16.0, speed_multiplier))
         normalized.append(
             {
+                "action": action,
+                "operation": operation,
                 "start_sec": round(start_sec, 3),
                 "end_sec": round(end_sec, 3),
                 "reason": str(item.get("reason", "Model suggestion")),
                 "confidence": max(0.0, min(1.0, confidence)),
+                "speed_multiplier": speed_multiplier,
             }
         )
 

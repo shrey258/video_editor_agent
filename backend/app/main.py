@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -45,6 +46,14 @@ from .video_tools import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(BACKEND_ROOT / ".env")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=LOG_LEVEL,
+        format="%(levelname)s:%(name)s:%(message)s",
+    )
+logging.getLogger("app").setLevel(LOG_LEVEL)
+logging.getLogger("app.gemini_agent").setLevel(LOG_LEVEL)
 MEDIA_ROOT = (BACKEND_ROOT / os.getenv("MEDIA_ROOT", "media")).resolve()
 MAX_VIDEO_DURATION_SEC = float(os.getenv("MAX_VIDEO_DURATION_SEC", "10"))
 UPLOAD_DIR = MEDIA_ROOT / "uploads"
@@ -210,33 +219,55 @@ async def edit_request(payload: EditRequest) -> EditResponse:
         raise HTTPException(status_code=404, detail="Unknown video_id")
 
     duration = float(session["duration_sec"])
+    action = "trim_video"
+    operation = "remove_segment"
+    start_sec = 0.0
+    end_sec = 0.0
     try:
         intent = await parse_intent(payload.prompt, duration)
-        if intent["action"] != "trim_video":
-            raise ValueError("Only trim_video is supported in v0.")
+        action = intent.get("action", "trim_video")
         operation = intent.get("operation", "remove_segment")
-        if operation not in {"remove_segment", "extract_range"}:
-            raise ValueError(f"Unsupported trim operation: {operation}")
         start_sec = float(intent["start_sec"])
         end_sec = float(intent["end_sec"])
         validate_trim(start_sec, end_sec, duration)
-        if operation == "remove_segment":
-            # Removing the full duration would produce an empty file.
-            if start_sec <= 0 and end_sec >= duration:
-                raise ValueError("Cannot remove the entire video range.")
-            output_path = remove_segment_and_stitch(
+        if action == "trim_video":
+            if operation not in {"remove_segment", "extract_range"}:
+                raise ValueError(f"Unsupported trim operation: {operation}")
+            if operation == "remove_segment":
+                # Removing the full duration would produce an empty file.
+                if start_sec <= 0 and end_sec >= duration:
+                    raise ValueError("Cannot remove the entire video range.")
+                output_path = remove_segment_and_stitch(
+                    input_path=Path(session["input_path"]),
+                    output_dir=OUTPUT_DIR,
+                    start_sec=start_sec,
+                    end_sec=end_sec,
+                )
+            else:
+                output_path = extract_range(
+                    input_path=Path(session["input_path"]),
+                    output_dir=OUTPUT_DIR,
+                    start_sec=start_sec,
+                    end_sec=end_sec,
+                )
+        elif action == "speed_video":
+            if operation != "apply_speed_range":
+                raise ValueError(f"Unsupported speed operation: {operation}")
+            speed_multiplier = float(intent.get("speed_multiplier", 2.0))
+            if speed_multiplier <= 0:
+                raise ValueError("speed_multiplier must be greater than 0.")
+            speed_segments = _build_speed_segments(
+                duration_sec=duration,
+                trim_ranges=[],
+                speed_ranges=[(start_sec, end_sec, speed_multiplier)],
+            )
+            output_path = render_segments_with_speed(
                 input_path=Path(session["input_path"]),
                 output_dir=OUTPUT_DIR,
-                start_sec=start_sec,
-                end_sec=end_sec,
+                segments=speed_segments,
             )
         else:
-            output_path = extract_range(
-                input_path=Path(session["input_path"]),
-                output_dir=OUTPUT_DIR,
-                start_sec=start_sec,
-                end_sec=end_sec,
-            )
+            raise ValueError(f"Unsupported action: {action}")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except HTTPException:
@@ -245,9 +276,9 @@ async def edit_request(payload: EditRequest) -> EditResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return EditResponse(
-        action="trim_video",
+        action=action,
         operation=operation,
-        reason=intent.get("reason", "Applied trim."),
+        reason=intent.get("reason", "Applied edit."),
         output={
             "start_sec": start_sec,
             "end_sec": end_sec,

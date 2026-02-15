@@ -1,3 +1,5 @@
+from typing import Literal, Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -73,11 +75,14 @@ class TokenEstimateResponse(BaseModel):
     notes: list[str]
 
 
-class CutSuggestion(BaseModel):
+class EditSuggestion(BaseModel):
+    action: Literal["trim_video", "speed_video"] = "trim_video"
+    operation: Literal["remove_segment", "extract_range", "apply_speed_range"] = "remove_segment"
     start_sec: float
     end_sec: float
     reason: str
     confidence: float = 0.5
+    speed_multiplier: Optional[float] = None
 
 
 class SuggestCutsRequest(BaseModel):
@@ -89,7 +94,7 @@ class SuggestCutsRequest(BaseModel):
 
 
 class SuggestCutsResponse(BaseModel):
-    suggestions: list[CutSuggestion]
+    suggestions: list[EditSuggestion]
     model: str
     strategy: str
 
