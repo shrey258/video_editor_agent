@@ -1,6 +1,7 @@
 from pathlib import Path
+import os
 import sys
-import asyncio
+import time
 
 from fastapi.testclient import TestClient
 
@@ -9,7 +10,6 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.main import app
-from app.gemini_agent import parse_intent
 
 
 client = TestClient(app)
@@ -48,10 +48,10 @@ def test_token_estimate_rejects_invalid_duration():
     assert response.status_code == 422
 
 
-def test_suggest_cuts_fallback_explicit_range(monkeypatch):
+def test_agent_plan_fallback_explicit_range(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     response = client.post(
-        "/ai/suggest-cuts-from-sprites",
+        "/agent/plan",
         json={
             "prompt": "Cut from 4 to 5 seconds",
             "duration_sec": 20,
@@ -64,18 +64,21 @@ def test_suggest_cuts_fallback_explicit_range(monkeypatch):
     data = response.json()
     assert data["model"] == "fallback"
     assert data["strategy"] == "rule-based"
-    assert len(data["suggestions"]) >= 1
-    first = data["suggestions"][0]
+    assert data["plan_id"]
+    assert data["reasoning"]
+    assert len(data["proposals"]) >= 1
+    first = data["proposals"][0]
+    assert first["id"]
     assert first["action"] == "trim_video"
     assert first["operation"] == "remove_segment"
     assert first["start_sec"] == 4
     assert first["end_sec"] == 5
 
 
-def test_suggest_cuts_fallback_speed_range(monkeypatch):
+def test_agent_plan_fallback_speed_range(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     response = client.post(
-        "/ai/suggest-cuts-from-sprites",
+        "/agent/plan",
         json={
             "prompt": "Speed up 2x from 4 to 5 seconds",
             "duration_sec": 20,
@@ -86,8 +89,8 @@ def test_suggest_cuts_fallback_speed_range(monkeypatch):
     )
     assert response.status_code == 200
     data = response.json()
-    assert len(data["suggestions"]) >= 1
-    first = data["suggestions"][0]
+    assert len(data["proposals"]) >= 1
+    first = data["proposals"][0]
     assert first["action"] == "speed_video"
     assert first["operation"] == "apply_speed_range"
     assert first["start_sec"] == 4
@@ -95,23 +98,25 @@ def test_suggest_cuts_fallback_speed_range(monkeypatch):
     assert first["speed_multiplier"] == 2
 
 
-def test_suggest_cuts_accepts_context_fields(monkeypatch):
+def test_agent_plan_accepts_context_fields(monkeypatch):
     import app.main as main
 
     captured = {}
 
-    async def fake_suggest_cuts_from_sprites(**kwargs):
+    async def fake_plan_edits(**kwargs):
         captured.update(kwargs)
         return {
+            "plan_id": "fake-plan",
+            "reasoning": "test",
             "model": "fake",
             "strategy": "test",
-            "suggestions": [],
+            "proposals": [],
         }
 
-    monkeypatch.setattr(main, "suggest_cuts_from_sprites", fake_suggest_cuts_from_sprites)
+    monkeypatch.setattr(main, "plan_edits", fake_plan_edits)
 
     response = client.post(
-        "/ai/suggest-cuts-from-sprites",
+        "/agent/plan",
         json={
             "prompt": "Make intro faster",
             "duration_sec": 8,
@@ -132,16 +137,6 @@ def test_suggest_cuts_accepts_context_fields(monkeypatch):
     assert captured["conversation_summary"] == "Earlier user goals: trim pauses"
     assert captured["trim_ranges"] == [{"start": 1.0, "end": 1.5}]
     assert captured["speed_ranges"] == [{"start": 2.0, "end": 3.0, "speed": 2.0}]
-
-
-def test_parse_intent_fallback_speed_range(monkeypatch):
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    intent = asyncio.run(parse_intent("Speed up 2x from 4 to 5 seconds", 10))
-    assert intent["action"] == "speed_video"
-    assert intent["operation"] == "apply_speed_range"
-    assert intent["start_sec"] == 4
-    assert intent["end_sec"] == 5
-    assert intent["speed_multiplier"] == 2
 
 
 def test_token_estimate_from_file_rejects_over_max_duration(monkeypatch, tmp_path):
@@ -261,51 +256,137 @@ def test_export_splits_full_speed_when_trims_are_present(monkeypatch, tmp_path):
     assert captured["segments"] == [(0.0, 3.0, 2.0), (4.0, 6.0, 2.0), (7.0, 8.0, 2.0)]
 
 
-def test_edit_request_applies_speed_range(monkeypatch, tmp_path):
+def test_api_key_required_when_set(monkeypatch):
     import app.main as main
 
-    source_file = tmp_path / "source.mp4"
-    source_file.write_bytes(b"dummy")
-    rendered_file = tmp_path / "rendered.mp4"
-    rendered_file.write_bytes(b"rendered")
+    monkeypatch.setattr(main, "API_KEY", "secret123")
 
-    main.video_sessions["speed-test"] = {
-        "input_path": source_file,
-        "duration_sec": 8.0,
-        "filename": "source.mp4",
+    no_header = client.post("/analyze/token-estimate", json={"duration_sec": 10})
+    assert no_header.status_code == 401
+
+    wrong_header = client.post(
+        "/analyze/token-estimate",
+        json={"duration_sec": 10},
+        headers={"X-API-Key": "wrong"},
+    )
+    assert wrong_header.status_code == 401
+
+    right_header = client.post(
+        "/analyze/token-estimate",
+        json={"duration_sec": 10},
+        headers={"X-API-Key": "secret123"},
+    )
+    assert right_header.status_code == 200
+
+    health = client.get("/health")
+    assert health.status_code == 200
+
+
+def test_api_key_not_required_when_unset(monkeypatch):
+    import app.main as main
+
+    monkeypatch.setattr(main, "API_KEY", "")
+
+    response = client.post("/analyze/token-estimate", json={"duration_sec": 10})
+    assert response.status_code == 200
+
+
+def test_sweep_stale_media_deletes_stale_files_only(tmp_path, monkeypatch):
+    import app.main as main
+
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    monkeypatch.setattr(main, "OUTPUT_DIR", output_dir)
+    monkeypatch.setattr(main, "UPLOAD_DIR", upload_dir)
+    monkeypatch.setattr(main, "OUTPUT_TTL_MIN", 60.0)
+
+    old_output = output_dir / "old.mp4"
+    old_output.write_bytes(b"x")
+    old_upload = upload_dir / "old-source.mp4"
+    old_upload.write_bytes(b"x")
+    old_time = time.time() - 3600
+    os.utime(old_output, (old_time, old_time))
+    os.utime(old_upload, (old_time, old_time))
+
+    new_output = output_dir / "new.mp4"
+    new_output.write_bytes(b"x")
+
+    main._sweep_stale_media()
+
+    assert not old_output.exists()
+    assert not old_upload.exists()
+    assert new_output.exists()
+
+
+def test_sweep_stale_media_disabled_when_ttl_zero(tmp_path, monkeypatch):
+    import app.main as main
+
+    monkeypatch.setattr(main, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(main, "OUTPUT_TTL_MIN", 0)
+
+    old_file = tmp_path / "old.mp4"
+    old_file.write_bytes(b"x")
+    old_time = time.time() - 3600
+    os.utime(old_file, (old_time, old_time))
+
+    main._sweep_stale_media()
+
+    assert old_file.exists()
+
+
+def test_rate_limit_blocks_after_threshold_then_recovers(monkeypatch):
+    import app.main as main
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(main, "_rate_limit_buckets", {})
+    monkeypatch.setattr(main, "_RATE_LIMITED_PATHS", {**main._RATE_LIMITED_PATHS, "/agent/plan": 3})
+
+    payload = {
+        "prompt": "cut from 4 to 8 seconds",
+        "duration_sec": 20.0,
+        "sprite_interval_sec": 1.0,
+        "total_frames": 20,
+        "sheets_count": 1,
     }
 
-    async def fake_parse_intent(prompt: str, duration_sec: float):
-        return {
-            "action": "speed_video",
-            "operation": "apply_speed_range",
-            "start_sec": 1.0,
-            "end_sec": 3.0,
-            "speed_multiplier": 2.0,
-            "reason": "Speed up highlighted section.",
-        }
+    for _ in range(3):
+        response = client.post("/agent/plan", json=payload)
+        assert response.status_code == 200
 
-    captured = {}
+    limited = client.post("/agent/plan", json=payload)
+    assert limited.status_code == 429
+    assert "Retry-After" in limited.headers
 
-    def fake_render_segments_with_speed(*, input_path, output_dir, segments):
-        captured["segments"] = segments
-        return rendered_file
-
-    monkeypatch.setattr(main, "parse_intent", fake_parse_intent)
-    monkeypatch.setattr(main, "render_segments_with_speed", fake_render_segments_with_speed)
-
-    response = client.post(
-        "/edit-request",
-        json={
-            "video_id": "speed-test",
-            "prompt": "Speed this section",
-        },
+    # A different endpoint has its own independent bucket.
+    unaffected = client.post(
+        "/analyze/token-estimate",
+        json={"duration_sec": 10, "interval_sec": 1.0, "columns": 8, "rows": 8, "thumb_width": 256},
     )
+    assert unaffected.status_code == 200
 
-    main.video_sessions.pop("speed-test", None)
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["action"] == "speed_video"
-    assert data["operation"] == "apply_speed_range"
-    assert captured["segments"] == [(0.0, 1.0, 1.0), (1.0, 3.0, 2.0), (3.0, 8.0, 1.0)]
+def test_rate_limit_bucket_is_keyed_by_client_ip_and_path(monkeypatch):
+    import app.main as main
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(main, "_rate_limit_buckets", {})
+    monkeypatch.setattr(main, "_RATE_LIMITED_PATHS", {**main._RATE_LIMITED_PATHS, "/agent/summarize": 1})
+
+    payload = {"older_turns": [{"role": "user", "content": "cut the intro"}], "previous_summary": None}
+
+    first = client.post("/agent/summarize", json=payload)
+    assert first.status_code == 200
+    # Bucketed by (ip, path), not path alone — one busy client on this path
+    # shouldn't also throttle a different client, or a different endpoint.
+    [(bucket_ip, bucket_path)] = main._rate_limit_buckets.keys()
+    assert bucket_path == "/agent/summarize"
+    assert isinstance(bucket_ip, str) and bucket_ip
+
+    second = client.post("/agent/summarize", json=payload)
+    assert second.status_code == 429
+    assert "Retry-After" in second.headers
+
+

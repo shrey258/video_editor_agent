@@ -1,33 +1,35 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
-from .gemini_agent import parse_intent, suggest_cuts_from_sprites
+from .gemini_agent import plan_edits, summarize_conversation
 from .schemas import (
-    EditRequest,
-    EditResponse,
+    AgentPlanRequest,
+    AgentPlanResponse,
+    ConversationSummaryRequest,
+    ConversationSummaryResponse,
     ExportResponse,
-    SuggestCutsRequest,
-    SuggestCutsResponse,
     SpriteAnalysisResponse,
     TokenEstimateRequest,
     TokenEstimateResponse,
     TrimRange,
-    UploadResponse,
 )
 from .services.media_service import (
+    find_persisted_upload,
     probe_duration_or_cleanup,
     save_upload_file,
     validate_sprite_params,
@@ -40,12 +42,14 @@ from .video_tools import (
     generate_sprite_sheets,
     get_duration_sec,
     remove_segments_and_stitch,
-    remove_segment_and_stitch,
     render_segments_with_speed,
 )
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(BACKEND_ROOT / ".env")
+# override=True: backend/.env is the source of truth for local/self-host dev —
+# a stale exported shell var (e.g. GEMINI_API_KEY from an unrelated project)
+# should never silently win over what's actually configured for this app.
+load_dotenv(BACKEND_ROOT / ".env", override=True)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 if not logging.getLogger().handlers:
     logging.basicConfig(
@@ -55,7 +59,8 @@ if not logging.getLogger().handlers:
 logging.getLogger("app").setLevel(LOG_LEVEL)
 logging.getLogger("app.gemini_agent").setLevel(LOG_LEVEL)
 MEDIA_ROOT = (BACKEND_ROOT / os.getenv("MEDIA_ROOT", "media")).resolve()
-MAX_VIDEO_DURATION_SEC = float(os.getenv("MAX_VIDEO_DURATION_SEC", "10"))
+MAX_VIDEO_DURATION_SEC = float(os.getenv("MAX_VIDEO_DURATION_SEC", "1200"))  # 20 min, ADR-0006
+OUTPUT_TTL_MIN = float(os.getenv("OUTPUT_TTL_MIN", "60"))
 UPLOAD_DIR = MEDIA_ROOT / "uploads"
 OUTPUT_DIR = MEDIA_ROOT / "outputs"
 SPRITES_DIR = MEDIA_ROOT / "sprites"
@@ -77,6 +82,23 @@ def _allowed_origins() -> list[str]:
     if vercel_frontend_url:
         origins.add(vercel_frontend_url)
     return sorted(origins)
+
+
+def _sweep_stale_media() -> None:
+    # ponytail: opportunistic sweep-on-request, not a background timer — survives
+    # the scale-to-zero host since it only runs when a request is actually in flight.
+    # Covers OUTPUT_DIR (rendered exports) and UPLOAD_DIR (source videos persisted
+    # alongside sprites for later tools like silence detection, ADR-0002/X5).
+    if OUTPUT_TTL_MIN <= 0:
+        return
+    cutoff = time.time() - OUTPUT_TTL_MIN * 60
+    for directory in (OUTPUT_DIR, UPLOAD_DIR):
+        for path in directory.glob("*"):
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+            except OSError:
+                continue
 
 
 def _enforce_max_duration(duration_sec: float) -> None:
@@ -173,119 +195,61 @@ app.mount("/media/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="upload
 app.mount("/media/outputs", StaticFiles(directory=str(OUTPUT_DIR)), name="outputs")
 app.mount("/media/sprites", StaticFiles(directory=str(SPRITES_DIR)), name="sprites")
 
-video_sessions: Dict[str, dict] = {}
+API_KEY = os.getenv("API_KEY", "").strip()
+
+
+@app.middleware("http")
+async def require_api_key(request: Request, call_next):
+    # ponytail: single shared secret (self-host, single-user); /health and /media/*
+    # stay open since <video>/<img> tags can't send custom headers. Add per-user
+    # auth if this ever goes multi-tenant.
+    open_path = request.url.path == "/health" or request.url.path.startswith("/media/")
+    if API_KEY and request.method != "OPTIONS" and not open_path:
+        if request.headers.get("x-api-key") != API_KEY:
+            return JSONResponse(status_code=401, content={"detail": "Invalid or missing API key."})
+    return await call_next(request)
+
+
+# L2: closes the "leaked URL / runaway loop burns quota or disk" hole the shared
+# API key alone doesn't (ADR-0004) — one key means no per-user throttling, so the
+# limit is per-client-IP instead. ponytail: in-memory sliding-window log, no new
+# dependency; fine at self-host/single-process scale (same reasoning as
+# ADR-0005's threadpool-over-job-queue call). Grows one small entry per unique
+# IP that's ever called a limited endpoint — negligible at this scale; add a
+# periodic sweep if that ever changes.
+RATE_LIMIT_WINDOW_SEC = 60.0
+RATE_LIMIT_AI_PER_MIN = int(os.getenv("RATE_LIMIT_AI_PER_MIN", "10"))
+RATE_LIMIT_EXPORT_PER_MIN = int(os.getenv("RATE_LIMIT_EXPORT_PER_MIN", "5"))
+_RATE_LIMITED_PATHS = {
+    "/agent/plan": RATE_LIMIT_AI_PER_MIN,
+    "/agent/summarize": RATE_LIMIT_AI_PER_MIN,
+    "/export/from-file": RATE_LIMIT_EXPORT_PER_MIN,
+}
+_rate_limit_buckets: dict[tuple[str, str], list[float]] = {}
+
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    limit = _RATE_LIMITED_PATHS.get(request.url.path)
+    if limit and limit > 0 and request.method != "OPTIONS":
+        client_ip = request.client.host if request.client else "unknown"
+        key = (client_ip, request.url.path)
+        now = time.time()
+        recent = [t for t in _rate_limit_buckets.get(key, []) if t > now - RATE_LIMIT_WINDOW_SEC]
+        if len(recent) >= limit:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": f"Rate limit exceeded: max {limit} requests/min for this endpoint."},
+                headers={"Retry-After": str(int(RATE_LIMIT_WINDOW_SEC))},
+            )
+        recent.append(now)
+        _rate_limit_buckets[key] = recent
+    return await call_next(request)
 
 
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
-
-
-@app.post("/upload", response_model=UploadResponse)
-async def upload_video(file: UploadFile = File(...)) -> UploadResponse:
-    max_mb = int(os.getenv("MAX_FILE_SIZE_MB", "500"))
-    try:
-        save_path = await save_upload_file(
-            file=file, upload_dir=UPLOAD_DIR, max_file_size_mb=max_mb
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
-
-    try:
-        duration = probe_duration_or_cleanup(save_path)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _enforce_max_duration(duration)
-
-    video_id = str(uuid4())
-    filename = save_path.name
-    video_sessions[video_id] = {
-        "input_path": save_path,
-        "duration_sec": duration,
-        "filename": filename,
-    }
-    return UploadResponse(
-        video_id=video_id,
-        source_url=f"/media/uploads/{filename}",
-        duration_sec=duration,
-        filename=filename,
-    )
-
-
-@app.post("/edit-request", response_model=EditResponse)
-async def edit_request(payload: EditRequest) -> EditResponse:
-    session = video_sessions.get(payload.video_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Unknown video_id")
-
-    duration = float(session["duration_sec"])
-    action = "trim_video"
-    operation = "remove_segment"
-    start_sec = 0.0
-    end_sec = 0.0
-    try:
-        intent = await parse_intent(payload.prompt, duration)
-        action = intent.get("action", "trim_video")
-        operation = intent.get("operation", "remove_segment")
-        start_sec = float(intent["start_sec"])
-        end_sec = float(intent["end_sec"])
-        validate_trim(start_sec, end_sec, duration)
-        if action == "trim_video":
-            if operation not in {"remove_segment", "extract_range"}:
-                raise ValueError(f"Unsupported trim operation: {operation}")
-            if operation == "remove_segment":
-                # Removing the full duration would produce an empty file.
-                if start_sec <= 0 and end_sec >= duration:
-                    raise ValueError("Cannot remove the entire video range.")
-                output_path = remove_segment_and_stitch(
-                    input_path=Path(session["input_path"]),
-                    output_dir=OUTPUT_DIR,
-                    start_sec=start_sec,
-                    end_sec=end_sec,
-                )
-            else:
-                output_path = extract_range(
-                    input_path=Path(session["input_path"]),
-                    output_dir=OUTPUT_DIR,
-                    start_sec=start_sec,
-                    end_sec=end_sec,
-                )
-        elif action == "speed_video":
-            if operation != "apply_speed_range":
-                raise ValueError(f"Unsupported speed operation: {operation}")
-            speed_multiplier = float(intent.get("speed_multiplier", 2.0))
-            if speed_multiplier <= 0:
-                raise ValueError("speed_multiplier must be greater than 0.")
-            speed_segments = _build_speed_segments(
-                duration_sec=duration,
-                trim_ranges=[],
-                speed_ranges=[(start_sec, end_sec, speed_multiplier)],
-            )
-            output_path = render_segments_with_speed(
-                input_path=Path(session["input_path"]),
-                output_dir=OUTPUT_DIR,
-                segments=speed_segments,
-            )
-        else:
-            raise ValueError(f"Unsupported action: {action}")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    return EditResponse(
-        action=action,
-        operation=operation,
-        reason=intent.get("reason", "Applied edit."),
-        output={
-            "start_sec": start_sec,
-            "end_sec": end_sec,
-            "output_url": f"/media/outputs/{output_path.name}",
-            "output_name": output_path.name,
-        },
-    )
 
 
 @app.post("/analyze/sprites", response_model=SpriteAnalysisResponse)
@@ -296,23 +260,25 @@ async def analyze_sprites(
     rows: int = Form(10),
     thumb_width: int = Form(320),
 ) -> SpriteAnalysisResponse:
+    await asyncio.to_thread(_sweep_stale_media)
     try:
         validate_sprite_params(interval_sec, columns, rows)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     upload_path = await save_upload_file(file=file, upload_dir=UPLOAD_DIR)
     try:
-        duration_sec = probe_duration_or_cleanup(upload_path)
+        duration_sec = await asyncio.to_thread(probe_duration_or_cleanup, upload_path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _enforce_max_duration(duration_sec)
-    persist_sprites = os.getenv("SPRITE_PERSIST", "false").strip().lower() == "true"
+    persist_sprites = os.getenv("SPRITE_PERSIST", "true").strip().lower() == "true"
     sprite_job_id = str(uuid4())
 
     try:
         if persist_sprites:
             sprite_output_dir = SPRITES_DIR / sprite_job_id
-            analysis = generate_sprite_sheets(
+            analysis = await asyncio.to_thread(
+                generate_sprite_sheets,
                 input_path=upload_path,
                 output_dir=sprite_output_dir,
                 interval_sec=interval_sec,
@@ -337,7 +303,8 @@ async def analyze_sprites(
                 )
         else:
             with tempfile.TemporaryDirectory(prefix="sprite_job_") as temp_dir:
-                analysis = generate_sprite_sheets(
+                analysis = await asyncio.to_thread(
+                    generate_sprite_sheets,
                     input_path=upload_path,
                     output_dir=Path(temp_dir),
                     interval_sec=interval_sec,
@@ -364,7 +331,16 @@ async def analyze_sprites(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Sprite analysis failed: {exc}") from exc
     finally:
-        upload_path.unlink(missing_ok=True)
+        # Keep the source video (keyed by sprite_job_id) so tools like silence
+        # detection can locate it later without a second upload — only when
+        # sprites are persisted; otherwise there's nothing to key it to.
+        if persist_sprites:
+            try:
+                upload_path.replace(UPLOAD_DIR / f"{sprite_job_id}{upload_path.suffix}")
+            except OSError:
+                upload_path.unlink(missing_ok=True)
+        else:
+            upload_path.unlink(missing_ok=True)
 
     return SpriteAnalysisResponse(
         duration_sec=analysis["duration_sec"],
@@ -372,6 +348,7 @@ async def analyze_sprites(
         columns=analysis["columns"],
         rows=analysis["rows"],
         total_frames=analysis["total_frames"],
+        sprite_job_id=sprite_job_id if persist_sprites else "",
         sheets=sheets,
     )
 
@@ -403,7 +380,7 @@ async def analyze_token_estimate_from_file(
 
     try:
         try:
-            duration_sec = probe_duration_or_cleanup(save_path)
+            duration_sec = await asyncio.to_thread(probe_duration_or_cleanup, save_path)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         _enforce_max_duration(duration_sec)
@@ -419,10 +396,10 @@ async def analyze_token_estimate_from_file(
         save_path.unlink(missing_ok=True)
 
 
-@app.post("/ai/suggest-cuts-from-sprites", response_model=SuggestCutsResponse)
-async def ai_suggest_cuts_from_sprites(payload: SuggestCutsRequest) -> SuggestCutsResponse:
+@app.post("/agent/plan", response_model=AgentPlanResponse)
+async def agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
     try:
-        result = await suggest_cuts_from_sprites(
+        result = await plan_edits(
             prompt=payload.prompt,
             duration_sec=payload.duration_sec,
             sprite_interval_sec=payload.sprite_interval_sec,
@@ -432,38 +409,81 @@ async def ai_suggest_cuts_from_sprites(payload: SuggestCutsRequest) -> SuggestCu
             conversation_summary=payload.conversation_summary,
             trim_ranges=[item.model_dump() for item in payload.trim_ranges],
             speed_ranges=[item.model_dump() for item in payload.speed_ranges],
+            sprite_job_id=payload.sprite_job_id,
+            sprites_dir=SPRITES_DIR,
+            uploads_dir=UPLOAD_DIR,
+            escalation_confidence_threshold=payload.escalation_confidence_threshold,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    return SuggestCutsResponse(
-        suggestions=result["suggestions"],
+    return AgentPlanResponse(
+        plan_id=result["plan_id"],
+        reasoning=result["reasoning"],
+        proposals=result["proposals"],
         model=result["model"],
         strategy=result["strategy"],
+        tokens_used=result.get("tokens_used"),
+        escalation=result.get("escalation"),
     )
+
+
+@app.post("/agent/summarize", response_model=ConversationSummaryResponse)
+async def agent_summarize(payload: ConversationSummaryRequest) -> ConversationSummaryResponse:
+    try:
+        result = await summarize_conversation(
+            older_turns=[item.model_dump() for item in payload.older_turns],
+            previous_summary=payload.previous_summary,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return ConversationSummaryResponse(**result)
 
 
 @app.post("/export/from-file", response_model=ExportResponse)
 async def export_from_file(
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(default=None),
+    sprite_job_id: Optional[str] = Form(default=None),
     trim_ranges: str = Form(default="[]"),
     speed_ranges: str = Form(default="[]"),
     speed_multiplier: Optional[float] = Form(default=None),
     speed_factor: Optional[float] = Form(default=None),
     speed: Optional[str] = Form(default=None),
 ) -> ExportResponse:
+    # ADR-0007: prefer the source already persisted under sprite_job_id (from
+    # /analyze/sprites) over re-uploading the whole file. A fresh upload stays
+    # the fallback — needed source only, then deleted; a resolved persisted
+    # source is left alone since other calls (re-plan, later exports) may still need it.
+    await asyncio.to_thread(_sweep_stale_media)
     max_mb = int(os.getenv("MAX_FILE_SIZE_MB", "500"))
-    try:
-        input_path = await save_upload_file(
-            file=file, upload_dir=UPLOAD_DIR, max_file_size_mb=max_mb
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    owns_input_path = False
+    if file is not None:
+        try:
+            input_path = await save_upload_file(
+                file=file, upload_dir=UPLOAD_DIR, max_file_size_mb=max_mb
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        owns_input_path = True
+    elif sprite_job_id:
+        resolved = await asyncio.to_thread(find_persisted_upload, UPLOAD_DIR, sprite_job_id)
+        if resolved is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No persisted source for this sprite_job_id (it may have expired); re-upload the file.",
+            )
+        input_path = resolved
+    else:
+        raise HTTPException(status_code=400, detail="Provide either file or sprite_job_id.")
 
     try:
-        duration_sec = probe_duration_or_cleanup(input_path)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if owns_input_path:
+            duration_sec = await asyncio.to_thread(probe_duration_or_cleanup, input_path)
+        else:
+            # Shared/persisted source: never delete-on-failure, other calls may still need it.
+            duration_sec = await asyncio.to_thread(get_duration_sec, input_path)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid media file: {exc}") from exc
     _enforce_max_duration(duration_sec)
 
     try:
@@ -526,14 +546,16 @@ async def export_from_file(
                 speed_ranges=normalized_speed_ranges,
             )
             if speed_segments and any(abs(seg[2] - 1.0) > 1e-6 for seg in speed_segments):
-                output_path = render_segments_with_speed(
+                output_path = await asyncio.to_thread(
+                    render_segments_with_speed,
                     input_path=input_path,
                     output_dir=OUTPUT_DIR,
                     segments=speed_segments,
                 )
             else:
                 if merged_ranges:
-                    output_path = remove_segments_and_stitch(
+                    output_path = await asyncio.to_thread(
+                        remove_segments_and_stitch,
                         input_path=input_path,
                         output_dir=OUTPUT_DIR,
                         duration_sec=duration_sec,
@@ -541,7 +563,8 @@ async def export_from_file(
                     )
                 else:
                     # No trims: produce a normal export copy by re-encoding the full source range.
-                    output_path = extract_range(
+                    output_path = await asyncio.to_thread(
+                        extract_range,
                         input_path=input_path,
                         output_dir=OUTPUT_DIR,
                         start_sec=0.0,
@@ -549,7 +572,8 @@ async def export_from_file(
                     )
 
             if selected_speed > 1.0 and not normalized_speed_ranges:
-                speed_output_path = apply_speed_multiplier(
+                speed_output_path = await asyncio.to_thread(
+                    apply_speed_multiplier,
                     input_path=output_path,
                     output_dir=OUTPUT_DIR,
                     speed_multiplier=selected_speed,
@@ -557,13 +581,14 @@ async def export_from_file(
                 output_path.unlink(missing_ok=True)
                 output_path = speed_output_path
             # Sanity check output can be probed.
-            _ = get_duration_sec(output_path)
+            _ = await asyncio.to_thread(get_duration_sec, output_path)
         except HTTPException:
             raise
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Export failed: {exc}") from exc
     finally:
-        input_path.unlink(missing_ok=True)
+        if owns_input_path:
+            input_path.unlink(missing_ok=True)
 
     return ExportResponse(
         output_url=f"/media/outputs/{output_path.name}",

@@ -3,32 +3,6 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 
-class UploadResponse(BaseModel):
-    video_id: str
-    source_url: str
-    duration_sec: float
-    filename: str
-
-
-class EditRequest(BaseModel):
-    video_id: str = Field(min_length=1)
-    prompt: str = Field(min_length=1)
-
-
-class EditOutput(BaseModel):
-    start_sec: float
-    end_sec: float
-    output_url: str
-    output_name: str
-
-
-class EditResponse(BaseModel):
-    action: str
-    operation: str
-    reason: str
-    output: EditOutput
-
-
 class SpriteFrame(BaseModel):
     index: int
     timestamp_sec: float
@@ -54,6 +28,7 @@ class SpriteAnalysisResponse(BaseModel):
     columns: int
     rows: int
     total_frames: int
+    sprite_job_id: str = ""
     sheets: list[SpriteSheet]
 
 
@@ -76,6 +51,7 @@ class TokenEstimateResponse(BaseModel):
 
 
 class EditSuggestion(BaseModel):
+    id: str
     action: Literal["trim_video", "speed_video"] = "trim_video"
     operation: Literal["remove_segment", "extract_range", "apply_speed_range"] = "remove_segment"
     start_sec: float
@@ -101,22 +77,50 @@ class TrimRange(BaseModel):
     end: float
 
 
-class SuggestCutsRequest(BaseModel):
+class ConversationSummaryRequest(BaseModel):
+    # Only the turns that just fell out of the raw chat_history window (P3-5) —
+    # a rolling summary, not the whole session re-summarized every call.
+    older_turns: list[ChatTurn] = Field(default_factory=list)
+    previous_summary: Optional[str] = None
+
+
+class ConversationSummaryResponse(BaseModel):
+    summary: str
+    model: str
+
+
+class AgentPlanRequest(BaseModel):
     prompt: str = Field(min_length=1)
     duration_sec: float = Field(gt=0)
     sprite_interval_sec: float = Field(gt=0)
     total_frames: int = Field(gt=0)
     sheets_count: int = Field(gt=0)
+    sprite_job_id: Optional[str] = None
     chat_history: list[ChatTurn] = Field(default_factory=list)
     conversation_summary: Optional[str] = None
     trim_ranges: list[TrimRange] = Field(default_factory=list)
     speed_ranges: list[SpeedRangeInput] = Field(default_factory=list)
+    # Dev-panel-only override (Design Handoff Part 3): live-adjustable escalation
+    # threshold for this call, not persisted; falls back to the server default.
+    escalation_confidence_threshold: Optional[float] = Field(default=None, ge=0, le=1)
 
 
-class SuggestCutsResponse(BaseModel):
-    suggestions: list[EditSuggestion]
+class EscalationEvent(BaseModel):
+    window_start_sec: float
+    window_end_sec: float
+    trigger: Literal["user_cue", "low_confidence"]
+    confidence_before: float
+    tokens_used: Optional[int] = None
+
+
+class AgentPlanResponse(BaseModel):
+    plan_id: str
+    reasoning: str
+    proposals: list[EditSuggestion]
     model: str
     strategy: str
+    tokens_used: Optional[int] = None
+    escalation: Optional[EscalationEvent] = None
 
 
 class ExportResponse(BaseModel):

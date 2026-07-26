@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 import math
@@ -11,6 +12,14 @@ def _run(cmd: list[str]) -> str:
     if result.returncode != 0:
         raise RuntimeError(result.stderr or result.stdout)
     return result.stdout
+
+
+def _run_capture_stderr(cmd: list[str]) -> str:
+    # ffmpeg log filters (e.g. silencedetect) write to stderr, not stdout.
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr or result.stdout)
+    return result.stderr
 
 
 def get_duration_sec(input_path: Path) -> float:
@@ -93,72 +102,6 @@ def extract_range(input_path: Path, output_dir: Path, start_sec: float, end_sec:
             str(output_path),
         ]
     )
-    return output_path
-
-
-def remove_segment_and_stitch(
-    input_path: Path, output_dir: Path, start_sec: float, end_sec: float
-) -> Path:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{uuid4()}.mp4"
-
-    if has_audio_stream(input_path):
-        filter_complex = (
-            f"[0:v]trim=0:{start_sec:.3f},setpts=PTS-STARTPTS[v0];"
-            f"[0:v]trim=start={end_sec:.3f},setpts=PTS-STARTPTS[v1];"
-            f"[0:a]atrim=0:{start_sec:.3f},asetpts=PTS-STARTPTS[a0];"
-            f"[0:a]atrim=start={end_sec:.3f},asetpts=PTS-STARTPTS[a1];"
-            "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"
-        )
-        _run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(input_path),
-                "-filter_complex",
-                filter_complex,
-                "-map",
-                "[v]",
-                "-map",
-                "[a]",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "18",
-                "-c:a",
-                "aac",
-                str(output_path),
-            ]
-        )
-    else:
-        filter_complex = (
-            f"[0:v]trim=0:{start_sec:.3f},setpts=PTS-STARTPTS[v0];"
-            f"[0:v]trim=start={end_sec:.3f},setpts=PTS-STARTPTS[v1];"
-            "[v0][v1]concat=n=2:v=1:a=0[v]"
-        )
-        _run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(input_path),
-                "-filter_complex",
-                filter_complex,
-                "-map",
-                "[v]",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "18",
-                str(output_path),
-            ]
-        )
-
     return output_path
 
 
@@ -339,8 +282,7 @@ def apply_speed_multiplier(
     ]
 
     if has_audio_stream(input_path):
-        # v0 supports 1x and 2x only; one atempo stage is enough.
-        cmd.extend(["-filter:a", f"atempo={multiplier}", "-c:a", "aac"])
+        cmd.extend(["-filter:a", _build_atempo_chain(multiplier), "-c:a", "aac"])
 
     cmd.append(str(output_path))
     _run(cmd)
@@ -441,3 +383,81 @@ def generate_sprite_sheets(
         "total_frames": total_frames,
         "sheets": sheets,
     }
+
+
+def detect_silence(
+    input_path: Path,
+    *,
+    noise_db: float = -30.0,
+    min_duration_sec: float = 0.5,
+) -> list[tuple[float, float]]:
+    """Detect silent audio ranges via FFmpeg's silencedetect filter. Returns
+    (start_sec, end_sec) pairs. If the file ends while still silent, the final
+    range is clipped to the file's duration."""
+    stderr = _run_capture_stderr(
+        [
+            "ffmpeg",
+            "-i",
+            str(input_path),
+            "-af",
+            f"silencedetect=noise={noise_db}dB:d={min_duration_sec}",
+            "-f",
+            "null",
+            "-",
+        ]
+    )
+    starts = [float(m) for m in re.findall(r"silence_start:\s*(-?[\d.]+)", stderr)]
+    ends = [float(m) for m in re.findall(r"silence_end:\s*(-?[\d.]+)", stderr)]
+    pairs = list(zip(starts, ends))
+    if len(starts) > len(ends):
+        pairs.append((starts[-1], get_duration_sec(input_path)))
+    return pairs
+
+
+def detect_scene_changes(
+    input_path: Path,
+    *,
+    threshold: float = 0.3,
+    max_results: int = 6,
+) -> list[float]:
+    """Detect scene-cut timestamps via FFmpeg's scene-change score (ADR-0002/L3).
+    Higher threshold = fewer, more confident cuts. Returns up to max_results
+    timestamps in chronological order."""
+    stderr = _run_capture_stderr(
+        [
+            "ffmpeg",
+            "-i",
+            str(input_path),
+            "-vf",
+            f"select='gt(scene,{threshold})',showinfo",
+            "-f",
+            "null",
+            "-",
+        ]
+    )
+    timestamps = [float(m) for m in re.findall(r"pts_time:([\d.]+)", stderr)]
+    return timestamps[:max_results]
+
+
+def extract_thumbnail(
+    input_path: Path, output_dir: Path, timestamp_sec: float, thumb_width: int = 256
+) -> Path:
+    """Extract a single frame at timestamp_sec as a PNG thumbnail."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{uuid4()}.png"
+    _run(
+        [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            f"{max(0.0, timestamp_sec):.3f}",
+            "-i",
+            str(input_path),
+            "-frames:v",
+            "1",
+            "-vf",
+            f"scale={thumb_width}:-1:flags=lanczos",
+            str(output_path),
+        ]
+    )
+    return output_path

@@ -9,6 +9,8 @@ import {
     Trash2,
     RotateCcw,
     FastForward,
+    Undo2,
+    Redo2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -26,8 +28,15 @@ const TOOLBAR_ITEMS = [
     { icon: ZoomOut, label: "Zoom out", shortcut: "-" },
     { icon: Scissors, label: "Trim", shortcut: "T" },
     { icon: Trash2, label: "Delete", shortcut: "⌫" },
+    { icon: Undo2, label: "Undo", shortcut: "⌘Z" },
+    { icon: Redo2, label: "Redo", shortcut: "⌘⇧Z" },
     { icon: RotateCcw, label: "Reset timeline", shortcut: "" },
 ] as const;
+
+// Keyboard nudging for the active trim/speed widget (a11y: mouse-only drag isn't
+// an acceptable sole input path). Shift = resize instead of move; Cmd/Ctrl = larger step.
+const NUDGE_STEP_SEC = 0.1;
+const NUDGE_STEP_LARGE_SEC = 1;
 
 type TrimWidget = { id: string; startTime: number; duration: number };
 type SpeedWidget = { id: string; startTime: number; duration: number; speed: number };
@@ -122,6 +131,8 @@ export function Timeline() {
         seek,
         setTrimRanges,
         setSpeedRanges,
+        undo,
+        redo,
     } = useVideo();
 
     const [zoom, setZoom] = useState(1);
@@ -270,7 +281,7 @@ export function Timeline() {
     useEffect(() => {
         if (!dragState) return;
 
-        const handleMouseMove = (e: MouseEvent) => {
+        const handleMouseMove = (e: PointerEvent) => {
             const deltaX = e.clientX - dragState.startX;
             if (Math.abs(deltaX) > 1) {
                 hasMovedDuringDragRef.current = true;
@@ -373,12 +384,12 @@ export function Timeline() {
             setDragState(null);
         };
 
-        window.addEventListener("mousemove", handleMouseMove);
-        window.addEventListener("mouseup", handleMouseUp);
+        window.addEventListener("pointermove", handleMouseMove);
+        window.addEventListener("pointerup", handleMouseUp);
 
         return () => {
-            window.removeEventListener("mousemove", handleMouseMove);
-            window.removeEventListener("mouseup", handleMouseUp);
+            window.removeEventListener("pointermove", handleMouseMove);
+            window.removeEventListener("pointerup", handleMouseUp);
         };
     }, [dragState, pxPerSecond, duration, commitTrimWidgetsToContext, commitSpeedWidgetsToContext]);
 
@@ -386,7 +397,7 @@ export function Timeline() {
     useEffect(() => {
         if (!isDraggingPlayhead) return;
 
-        function onMouseMove(e: MouseEvent) {
+        function onMouseMove(e: PointerEvent) {
             const time = posToTime(e.clientX);
             seek(time);
         }
@@ -395,11 +406,11 @@ export function Timeline() {
             setIsDraggingPlayhead(false);
         }
 
-        window.addEventListener("mousemove", onMouseMove);
-        window.addEventListener("mouseup", onMouseUp);
+        window.addEventListener("pointermove", onMouseMove);
+        window.addEventListener("pointerup", onMouseUp);
         return () => {
-            window.removeEventListener("mousemove", onMouseMove);
-            window.removeEventListener("mouseup", onMouseUp);
+            window.removeEventListener("pointermove", onMouseMove);
+            window.removeEventListener("pointerup", onMouseUp);
         };
     }, [
         isDraggingPlayhead,
@@ -515,6 +526,12 @@ export function Timeline() {
                 }
                 break;
             }
+            case "Undo":
+                undo();
+                break;
+            case "Redo":
+                redo();
+                break;
             case "Reset timeline":
                 setZoom(1);
                 setTrimWidgets([]);
@@ -547,6 +564,15 @@ export function Timeline() {
             if (!hasVideo || isTypingTarget(e.target)) return;
 
             const key = e.key.toLowerCase();
+            if ((e.metaKey || e.ctrlKey) && key === "z") {
+                e.preventDefault();
+                if (e.shiftKey) {
+                    redo();
+                } else {
+                    undo();
+                }
+                return;
+            }
             if (key === "a") {
                 e.preventDefault();
                 toolbarActionRef.current("Add segment");
@@ -570,12 +596,46 @@ export function Timeline() {
             if (e.key === "Backspace" || e.key === "Delete") {
                 e.preventDefault();
                 toolbarActionRef.current("Delete");
+                return;
+            }
+            if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                const activeId = activeTrimIdRef.current ?? activeSpeedIdRef.current;
+                if (!activeId) return;
+                e.preventDefault();
+                const isTrim = activeTrimIdRef.current === activeId;
+                const step =
+                    (e.metaKey || e.ctrlKey ? NUDGE_STEP_LARGE_SEC : NUDGE_STEP_SEC) *
+                    (e.key === "ArrowLeft" ? -1 : 1);
+                const nudge = <T extends TrimWidget>(w: T): T => {
+                    if (w.id !== activeId) return w;
+                    if (e.shiftKey) {
+                        let newDuration = Math.max(0.5, w.duration + step);
+                        if (duration && w.startTime + newDuration > duration) {
+                            newDuration = duration - w.startTime;
+                        }
+                        return { ...w, duration: newDuration };
+                    }
+                    let newStartTime = Math.max(0, w.startTime + step);
+                    if (duration && newStartTime + w.duration > duration) {
+                        newStartTime = duration - w.duration;
+                    }
+                    return { ...w, startTime: newStartTime };
+                };
+                if (isTrim) {
+                    const next = trimWidgetsRef.current.map(nudge);
+                    setTrimWidgets(next);
+                    commitTrimWidgetsToContext(next);
+                } else {
+                    const next = speedWidgetsRef.current.map(nudge);
+                    setSpeedWidgets(next);
+                    commitSpeedWidgetsToContext(next);
+                }
             }
         }
 
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, [hasVideo]);
+    }, [hasVideo, undo, redo, duration, commitTrimWidgetsToContext, commitSpeedWidgetsToContext]);
 
     return (
         <TooltipProvider delayDuration={200}>
@@ -642,7 +702,7 @@ export function Timeline() {
                                 <TooltipContent side="bottom" className="bg-zinc-800 text-zinc-200">
                                     <span>{item.label}</span>
                                     {item.shortcut && (
-                                        <span className="ml-2 text-zinc-500">{item.shortcut}</span>
+                                        <span className="ml-2 text-zinc-400">{item.shortcut}</span>
                                     )}
                                 </TooltipContent>
                             </Tooltip>
@@ -650,7 +710,7 @@ export function Timeline() {
                     ))}
 
                     {/* Zoom indicator */}
-                    <div className="ml-auto font-mono text-[11px] text-zinc-500">
+                    <div className="ml-auto font-mono text-[11px] text-zinc-400">
                         {Math.round(zoom * 100)}%
                     </div>
                 </div>
@@ -783,7 +843,15 @@ export function Timeline() {
                                         return (
                                             <div
                                                 key={widget.id}
-                                                className={`absolute inset-y-0 z-10 flex items-center justify-center rounded-lg cursor-move group transition-shadow duration-200 ${isActive ? "shadow-[0_0_0_1px_rgba(244,63,94,0.6),0_0_12px_-2px_rgba(244,63,94,0.3)]" : "shadow-[0_0_0_1px_rgba(244,63,94,0.35)]"}`}
+                                                tabIndex={0}
+                                                role="slider"
+                                                aria-label={`Trim segment, ${widget.startTime.toFixed(1)}s to ${(widget.startTime + widget.duration).toFixed(1)}s. Arrow keys move, shift+arrow resizes.`}
+                                                aria-valuenow={widget.startTime}
+                                                onFocus={() => {
+                                                    setActiveTrimId(widget.id);
+                                                    setActiveSpeedId(null);
+                                                }}
+                                                className={`absolute inset-y-0 z-10 flex items-center justify-center rounded-lg cursor-move group transition-shadow duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-400 ${isActive ? "shadow-[0_0_0_1px_rgba(244,63,94,0.6),0_0_12px_-2px_rgba(244,63,94,0.3)]" : "shadow-[0_0_0_1px_rgba(244,63,94,0.35)]"}`}
                                                 style={{
                                                     left: `${widget.startTime * pxPerSecond}px`,
                                                     width: `${widget.duration * pxPerSecond}px`,
@@ -792,7 +860,7 @@ export function Timeline() {
                                                         : "linear-gradient(135deg, rgba(244,63,94,0.15) 0%, rgba(251,113,133,0.10) 50%, rgba(244,63,94,0.12) 100%)",
                                                     backdropFilter: "blur(6px)",
                                                 }}
-                                                onMouseDown={(e) => {
+                                                onPointerDown={(e) => {
                                                     e.stopPropagation();
                                                     hasMovedDuringDragRef.current = false;
                                                     setActiveTrimId(widget.id);
@@ -818,7 +886,7 @@ export function Timeline() {
                                                 {/* Left Resize Handle */}
                                                 <div
                                                     className="absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize z-20 flex items-center justify-center"
-                                                    onMouseDown={(e) => {
+                                                    onPointerDown={(e) => {
                                                         e.stopPropagation();
                                                         hasMovedDuringDragRef.current = false;
                                                         setActiveTrimId(widget.id);
@@ -853,7 +921,7 @@ export function Timeline() {
                                                 {/* Right Resize Handle */}
                                                 <div
                                                     className="absolute right-0 top-0 bottom-0 w-3 cursor-ew-resize z-20 flex items-center justify-center"
-                                                    onMouseDown={(e) => {
+                                                    onPointerDown={(e) => {
                                                         e.stopPropagation();
                                                         hasMovedDuringDragRef.current = false;
                                                         setActiveTrimId(widget.id);
@@ -881,7 +949,15 @@ export function Timeline() {
                                         return (
                                             <div
                                                 key={widget.id}
-                                                className={`absolute inset-y-0 z-10 flex items-center justify-center rounded-lg cursor-move group transition-shadow duration-200 ${isActive ? "shadow-[0_0_0_1px_rgba(139,92,246,0.6),0_0_12px_-2px_rgba(139,92,246,0.3)]" : "shadow-[0_0_0_1px_rgba(139,92,246,0.35)]"}`}
+                                                tabIndex={0}
+                                                role="slider"
+                                                aria-label={`Speed segment, ${widget.speed}x, ${widget.startTime.toFixed(1)}s to ${(widget.startTime + widget.duration).toFixed(1)}s. Arrow keys move, shift+arrow resizes.`}
+                                                aria-valuenow={widget.startTime}
+                                                onFocus={() => {
+                                                    setActiveSpeedId(widget.id);
+                                                    setActiveTrimId(null);
+                                                }}
+                                                className={`absolute inset-y-0 z-10 flex items-center justify-center rounded-lg cursor-move group transition-shadow duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${isActive ? "shadow-[0_0_0_1px_rgba(139,92,246,0.6),0_0_12px_-2px_rgba(139,92,246,0.3)]" : "shadow-[0_0_0_1px_rgba(139,92,246,0.35)]"}`}
                                                 style={{
                                                     left: `${widget.startTime * pxPerSecond}px`,
                                                     width: `${widget.duration * pxPerSecond}px`,
@@ -890,7 +966,7 @@ export function Timeline() {
                                                         : "linear-gradient(135deg, rgba(139,92,246,0.14) 0%, rgba(167,139,250,0.08) 40%, rgba(96,165,250,0.10) 100%)",
                                                     backdropFilter: "blur(6px)",
                                                 }}
-                                                onMouseDown={(e) => {
+                                                onPointerDown={(e) => {
                                                     e.stopPropagation();
                                                     hasMovedDuringDragRef.current = false;
                                                     setActiveSpeedId(widget.id);
@@ -908,7 +984,7 @@ export function Timeline() {
                                                 {/* Left Resize Handle */}
                                                 <div
                                                     className="absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize z-20 flex items-center justify-center"
-                                                    onMouseDown={(e) => {
+                                                    onPointerDown={(e) => {
                                                         e.stopPropagation();
                                                         hasMovedDuringDragRef.current = false;
                                                         setActiveSpeedId(widget.id);
@@ -943,7 +1019,7 @@ export function Timeline() {
                                                 {/* Right Resize Handle */}
                                                 <div
                                                     className="absolute right-0 top-0 bottom-0 w-3 cursor-ew-resize z-20 flex items-center justify-center"
-                                                    onMouseDown={(e) => {
+                                                    onPointerDown={(e) => {
                                                         e.stopPropagation();
                                                         hasMovedDuringDragRef.current = false;
                                                         setActiveSpeedId(widget.id);
@@ -967,7 +1043,7 @@ export function Timeline() {
                                 {/* Playhead - Centered and visible */}
                                 {hasVideo && (
                                     <div
-                                        onMouseDown={(e) => {
+                                        onPointerDown={(e) => {
                                             e.stopPropagation();
                                             setIsDraggingPlayhead(true);
                                         }}
