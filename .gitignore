@@ -22,3 +22,9 @@ backend/media/
 # OS
 .DS_Store
 *.tsbuildinfo
+
+# graphify (keep report + graph.json committed)
+graphify-out/cache/
+graphify-out/graph.html
+graphify-out/.graphify_*
+graphify-out/cost.json
