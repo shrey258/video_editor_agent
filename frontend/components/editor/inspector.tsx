@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { useVideo } from "./video-context";
+import type { Effect, TextEffect } from "./video-store";
 
 type ChatMessage = {
     id: string;
@@ -66,6 +67,43 @@ type ExportResponse = {
     output_name: string;
     removed_ranges_count: number;
 };
+
+/** Draw a text effect onto a transparent full-frame PNG, styled like the preview in preview-canvas.tsx. */
+function renderTextOverlay(effect: TextEffect, width: number, height: number): Promise<Blob> {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d")!;
+    const fontSize = effect.size * height;
+    ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
+    ctx.textBaseline = "top";
+    ctx.fillStyle = effect.color;
+    ctx.shadowColor = "rgba(0,0,0,0.6)";
+    ctx.shadowOffsetY = fontSize * 0.04;
+    ctx.shadowBlur = fontSize * 0.15;
+    // CSS line-height 1.2 puts half the extra leading above the glyphs.
+    effect.text.split("\n").forEach((line, i) => {
+        ctx.fillText(line, effect.x * width, effect.y * height + fontSize * (0.1 + 1.2 * i));
+    });
+    return new Promise((resolve, reject) =>
+        canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Could not render text overlay."))), "image/png")
+    );
+}
+
+/** Effects in the backend's shape; text becomes an index into the uploaded overlay PNGs. */
+async function buildEffectsPayload(effects: Effect[], width: number, height: number) {
+    const overlays: Blob[] = [];
+    const payload = [];
+    for (const effect of effects) {
+        if (effect.kind === "text") {
+            overlays.push(await renderTextOverlay(effect, width, height));
+            payload.push({ kind: "text", start: effect.start, end: effect.end, overlay: overlays.length - 1 });
+        } else {
+            payload.push(effect); // the backend ignores the extra `id`
+        }
+    }
+    return { payload, overlays };
+}
 
 const PLACEHOLDER_MESSAGES: ChatMessage[] = [
     {
@@ -141,7 +179,7 @@ function mergeSpeedSuggestions(
 }
 
 export function Inspector() {
-    const { sourceFile, duration, trimRanges, speedRanges, setTrimRanges, setSpeedRanges } = useVideo();
+    const { sourceFile, duration, trimRanges, speedRanges, setTrimRanges, setSpeedRanges, effects, frame, videoRef } = useVideo();
     const [messages, setMessages] = useState<ChatMessage[]>(PLACEHOLDER_MESSAGES);
     const [input, setInput] = useState("");
     const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -375,6 +413,13 @@ export function Inspector() {
         }
 
         try {
+            // The preview's <video> is mounted whenever there is a source file to export.
+            const video = videoRef.current!;
+            const { payload, overlays } = await buildEffectsPayload(effects, video.videoWidth, video.videoHeight);
+            form.append("effects", JSON.stringify(payload));
+            form.append("frame", JSON.stringify(frame));
+            overlays.forEach((blob, i) => form.append("overlays", blob, `text-${i}.png`));
+
             const response = await fetch("/api/export/from-file", {
                 method: "POST",
                 body: form,

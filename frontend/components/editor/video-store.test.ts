@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { useVideoStore } from "./video-store";
+import { useVideoStore, zoomAt, zoomTransform, type Effect } from "./video-store";
 
 function resetStore() {
   const state = useVideoStore.getState();
@@ -114,5 +114,31 @@ describe("video-store", () => {
       { start: 2, end: 3, speed: 2 },
       { start: 7, end: 8, speed: 2 },
     ]);
+  });
+
+  it("eases zoom in, holds, and eases out like the export", () => {
+    const effects: Effect[] = [{ id: "z", kind: "zoom", start: 2, end: 6, scale: 2, cx: 0.9, cy: 0.1 }];
+    expect(zoomAt(effects, 1).scale).toBe(1);
+    expect(zoomAt(effects, 2.2).scale).toBeCloseTo(1.5);
+    expect(zoomAt(effects, 4).scale).toBe(2);
+    expect(zoomAt(effects, 6).scale).toBe(1);
+    // The window clamps to the frame edge instead of centring on (0.9, 0.1).
+    expect(zoomTransform(zoomAt(effects, 4))).toBe("scale(2) translate(-50%, 0%)");
+  });
+
+  it("adds effects at the playhead and keeps them inside the video", () => {
+    resetStore();
+    const state = useVideoStore.getState();
+    state.clearEffects();
+    state.setCurrentTime(9.8);
+    state.addEffect("text");
+    const added = useVideoStore.getState().effects[0];
+    expect(added).toMatchObject({ kind: "text", start: 9.5, end: 10 });
+    expect(useVideoStore.getState().selectedEffectId).toBe(added.id);
+
+    state.updateEffect(added.id, { end: 14 });
+    expect(useVideoStore.getState().effects[0].end).toBe(10);
+    state.removeEffect(added.id);
+    expect(useVideoStore.getState()).toMatchObject({ effects: [], selectedEffectId: null });
   });
 });

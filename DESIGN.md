@@ -31,6 +31,9 @@ Is it a separator glyph or a disabled hint?                 → text-zinc-600
 | --- | --- | --- |
 | Primary action, focus ring, trim segment, success | `primary` (green, `142 71% 45%`) | `bg-primary` buttons, trim handles, export link |
 | Speed segment | `violet-400` | Speed-widget handles in `timeline.tsx` |
+| Zoom effect | `sky-400` | Effects lane in `effects-track.tsx` |
+| Text effect | `fuchsia-400` | Effects lane in `effects-track.tsx` |
+| Blur effect | `slate-300` | Effects lane in `effects-track.tsx` |
 | Warning (for example, video too long) | `amber-300` text on `amber` at 6% bg / 20% border | `inspector.tsx` duration warning |
 | Removed (trimmed-out) region | `bg-red-950/30` | Trim masks in `timeline.tsx` |
 | Destructive action | `destructive` token | `Button variant="destructive"` |

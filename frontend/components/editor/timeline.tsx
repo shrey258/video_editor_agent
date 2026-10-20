@@ -19,6 +19,7 @@ import {
     TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useVideo } from "./video-context";
+import { EFFECT_KINDS, EFFECT_STYLES, EffectsTrack } from "./effects-track";
 
 const TOOLBAR_ITEMS = [
     { icon: Plus, label: "Add segment", shortcut: "A" },
@@ -122,6 +123,10 @@ export function Timeline() {
         seek,
         setTrimRanges,
         setSpeedRanges,
+        selectedEffectId,
+        addEffect,
+        removeEffect,
+        clearEffects,
     } = useVideo();
 
     const [zoom, setZoom] = useState(1);
@@ -501,6 +506,10 @@ export function Timeline() {
                 setIsAddSegmentMenuOpen(false);
                 break;
             case "Delete": {
+                if (selectedEffectId) {
+                    removeEffect(selectedEffectId);
+                    break;
+                }
                 if (activeTrimId) {
                     const next = trimWidgets.filter((w) => w.id !== activeTrimId);
                     setTrimWidgets(next);
@@ -523,6 +532,7 @@ export function Timeline() {
                 setActiveSpeedId(null);
                 setTrimRanges([]);
                 setSpeedRanges([]);
+                clearEffects();
                 break;
         }
     }
@@ -625,6 +635,24 @@ export function Timeline() {
                                         <FastForward className="h-4 w-4 text-zinc-400" />
                                         <span>Speed Up</span>
                                     </Button>
+                                    {EFFECT_KINDS.map((kind) => {
+                                        const { icon: Icon, label } = EFFECT_STYLES[kind];
+                                        return (
+                                            <Button
+                                                key={kind}
+                                                variant="ghost"
+                                                size="sm"
+                                                className="h-9 w-full justify-start gap-2 px-2 text-zinc-100 hover:bg-zinc-800 hover:text-white"
+                                                onClick={() => {
+                                                    addEffect(kind);
+                                                    setIsAddSegmentMenuOpen(false);
+                                                }}
+                                            >
+                                                <Icon className="h-4 w-4 text-zinc-400" />
+                                                <span>{label}</span>
+                                            </Button>
+                                        );
+                                    })}
                                 </div>
                             )}
 
@@ -988,6 +1016,7 @@ export function Timeline() {
                                     </div>
                                 )}
                             </div>
+                            {hasVideo && <EffectsTrack pxPerSecond={pxPerSecond} />}
                         </div>
                     </div>
                 </div>

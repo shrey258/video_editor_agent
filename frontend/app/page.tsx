@@ -2,6 +2,7 @@
 
 import { Stage } from "@/components/editor/stage";
 import { Inspector } from "@/components/editor/inspector";
+import { EffectsPanel } from "@/components/editor/effects-panel";
 import { Timeline } from "@/components/editor/timeline";
 import { VideoProvider } from "@/components/editor/video-context";
 
@@ -13,6 +14,9 @@ export default function EditorPage() {
         <div className="flex flex-1 overflow-hidden">
           {/* Stage (Preview) — fills remaining space */}
           <Stage />
+
+          {/* Effects and frame settings */}
+          <EffectsPanel />
 
           {/* Right sidebar — Inspector / AI Chat */}
           <Inspector />

@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { useVideo } from "./video-context";
+import { PreviewCanvas } from "./preview-canvas";
 
 function formatTime(seconds: number): string {
     const m = Math.floor(seconds / 60);
@@ -23,8 +24,6 @@ function formatTime(seconds: number): string {
 
 export function Stage() {
     const {
-        videoSrc,
-        videoRef,
         hasVideo,
         isPlaying,
         isMuted,
@@ -97,20 +96,7 @@ export function Stage() {
             {/* Video Preview Area */}
             <div className="relative flex w-full flex-1 items-center justify-center p-4">
                 {hasVideo ? (
-                    <div
-                        className="relative h-full w-full overflow-hidden rounded-lg"
-                        style={{
-                            background: "rgb(0,0,0)",
-                            boxShadow: "0 0 0 1px rgba(255,255,255,0.06), 0 8px 32px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.3)",
-                        }}
-                    >                        <video
-                            ref={videoRef}
-                            src={videoSrc!}
-                            className="absolute inset-0 h-full w-full object-contain"
-                            playsInline
-                            preload="metadata"
-                        />
-                    </div>
+                    <PreviewCanvas />
                 ) : (
                     /* Upload prompt */
                     <button

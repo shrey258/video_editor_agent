@@ -6,6 +6,61 @@ import { create } from "zustand";
 export type TrimRange = { start: number; end: number };
 export type SpeedRange = { start: number; end: number; speed: number };
 
+// Effects mirror backend/app/schemas.py (ZoomEffect, TextEffect, BlurEffect, FrameStyle).
+// All positions are 0–1 fractions of the source frame; all times are source seconds.
+export type ZoomEffect = { id: string; kind: "zoom"; start: number; end: number; scale: number; cx: number; cy: number };
+export type TextEffect = {
+  id: string;
+  kind: "text";
+  start: number;
+  end: number;
+  text: string;
+  x: number;
+  y: number;
+  /** Font size as a fraction of the video height. */
+  size: number;
+  color: string;
+};
+export type BlurEffect = { id: string; kind: "blur"; start: number; end: number; x: number; y: number; w: number; h: number };
+export type Effect = ZoomEffect | TextEffect | BlurEffect;
+export type EffectKind = Effect["kind"];
+export type EffectPatch = Partial<Omit<ZoomEffect, "kind" | "id"> & Omit<TextEffect, "kind" | "id"> & Omit<BlurEffect, "kind" | "id">>;
+
+export type FrameAspect = "native" | "16:9" | "9:16" | "1:1" | "4:3" | "4:5";
+export type FrameStyle = {
+  aspect: FrameAspect;
+  /** One color is solid, two is a diagonal gradient. */
+  colors: string[];
+  /** Percent of the canvas's short side. */
+  padding: number;
+  /** Percent of the video's short side. */
+  radius: number;
+  shadow: boolean;
+};
+
+export const ZOOM_SCALES = [1.25, 1.5, 1.8, 2.2, 3.5, 5];
+export const DEFAULT_FRAME: FrameStyle = { aspect: "native", colors: ["#000000"], padding: 0, radius: 0, shadow: false };
+
+/** Zoom level and focus at time t. Same easing as `_zoom_filter` in video_tools.py. */
+export function zoomAt(effects: Effect[], t: number): { scale: number; cx: number; cy: number } {
+  const zoom = effects
+    .filter((e): e is ZoomEffect => e.kind === "zoom")
+    .sort((a, b) => a.start - b.start)
+    .find((e) => t >= e.start && t <= e.end);
+  if (!zoom) return { scale: 1, cx: 0.5, cy: 0.5 };
+  const ramp = Math.min(0.4, (zoom.end - zoom.start) / 3);
+  const p = Math.max(0, Math.min(1, (t - zoom.start) / ramp, (zoom.end - t) / ramp));
+  return { scale: 1 + (zoom.scale - 1) * p * p * (3 - 2 * p), cx: zoom.cx, cy: zoom.cy };
+}
+
+/** CSS transform that shows the same window of the frame as the ffmpeg export. */
+export function zoomTransform({ scale, cx, cy }: { scale: number; cx: number; cy: number }): string {
+  const view = 1 / scale;
+  const left = Math.max(0, Math.min(1 - view, cx - view / 2));
+  const top = Math.max(0, Math.min(1 - view, cy - view / 2));
+  return `scale(${scale}) translate(${-left * 100}%, ${-top * 100}%)`;
+}
+
 export interface VideoStoreState {
   videoSrc: string | null;
   sourceFile: File | null;
@@ -19,6 +74,9 @@ export interface VideoStoreState {
   trimEnd: number;
   trimRanges: TrimRange[];
   speedRanges: SpeedRange[];
+  effects: Effect[];
+  selectedEffectId: string | null;
+  frame: FrameStyle;
   hasVideo: boolean;
 }
 
@@ -35,6 +93,12 @@ export interface VideoStoreActions {
   setTrimRange: (start: number, end: number) => void;
   setTrimRanges: (ranges: TrimRange[]) => void;
   setSpeedRanges: (ranges: SpeedRange[]) => void;
+  addEffect: (kind: EffectKind) => void;
+  updateEffect: (id: string, patch: EffectPatch) => void;
+  removeEffect: (id: string) => void;
+  selectEffect: (id: string | null) => void;
+  clearEffects: () => void;
+  setFrame: (patch: Partial<FrameStyle>) => void;
   requestFullscreen: () => void;
   setCurrentTime: (time: number) => void;
   setDuration: (duration: number) => void;
@@ -146,6 +210,9 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
   trimEnd: 0,
   trimRanges: [],
   speedRanges: [],
+  effects: [],
+  selectedEffectId: null,
+  frame: DEFAULT_FRAME,
   hasVideo: false,
 
   loadFile: (file) => {
@@ -164,6 +231,8 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
       trimEnd: 0,
       trimRanges: [],
       speedRanges: [],
+      effects: [],
+      selectedEffectId: null,
     });
   },
 
@@ -305,6 +374,43 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
       speedRanges: prunedSpeed,
     });
   },
+
+  addEffect: (kind) => {
+    const { currentTime, duration, effects } = get();
+    const total = duration > 0 ? duration : 30;
+    const start = Math.max(0, Math.min(currentTime, total - 0.5));
+    const span = { id: crypto.randomUUID(), start, end: Math.min(total, start + 2) };
+    const effect: Effect =
+      kind === "zoom"
+        ? { ...span, kind, scale: 1.8, cx: 0.5, cy: 0.5 }
+        : kind === "text"
+          ? { ...span, kind, text: "Your text", x: 0.08, y: 0.08, size: 0.08, color: "#ffffff" }
+          : { ...span, kind, x: 0.35, y: 0.35, w: 0.3, h: 0.3 };
+    set({ effects: [...effects, effect], selectedEffectId: effect.id });
+  },
+
+  updateEffect: (id, patch) => {
+    const total = get().duration;
+    set({
+      effects: get().effects.map((e) => {
+        if (e.id !== id) return e;
+        const next = { ...e, ...patch } as Effect;
+        next.start = Math.max(0, Math.min(next.start, next.end - MIN_SPEED_DURATION_SEC));
+        next.end = total > 0 ? Math.min(total, next.end) : next.end;
+        return next;
+      }),
+    });
+  },
+
+  removeEffect: (id) =>
+    set((state) => ({
+      effects: state.effects.filter((e) => e.id !== id),
+      selectedEffectId: state.selectedEffectId === id ? null : state.selectedEffectId,
+    })),
+
+  selectEffect: (id) => set({ selectedEffectId: id }),
+  clearEffects: () => set({ effects: [], selectedEffectId: null }),
+  setFrame: (patch) => set((state) => ({ frame: { ...state.frame, ...patch } })),
 
   setCurrentTime: (time) => set({ currentTime: time }),
   setDuration: (duration) => set({ duration }),

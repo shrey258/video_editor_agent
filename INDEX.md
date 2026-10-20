@@ -19,7 +19,7 @@ A map of every file you can edit, what it owns, and where to look first. Generat
 | File | Owns |
 | --- | --- |
 | `app/main.py` | Every HTTP route, CORS, env config, and the range merge/speed-segment math. The only entry point. |
-| `app/video_tools.py` | Every `ffmpeg`/`ffprobe` subprocess call: probe, trim, cut-and-stitch, speed (`atempo` chain), sprite sheets. |
+| `app/video_tools.py` | Every `ffmpeg`/`ffprobe` subprocess call: probe, trim, cut-and-stitch, speed (`atempo` chain), sprite sheets, and `apply_effects` (zoom, blur, text overlays, background frame), which export runs on the source before trim/speed. |
 | `app/gemini_agent.py` | Gemini REST calls: `parse_intent` (prompt → edit op) and `suggest_cuts_from_sprites`. Each has a regex/heuristic fallback when there's no key. |
 | `app/schemas.py` | Pydantic request/response models. The contract with the frontend. |
 | `app/validators.py` | `parse_time_like` (for `"1:05"`, `"65s"` and similar) and `validate_trim`. |
@@ -50,10 +50,13 @@ A map of every file you can edit, what it owns, and where to look first. Generat
 | `app/globals.css` | Semantic color tokens (HSL CSS vars) and scrollbar utilities. |
 | `tailwind.config.ts` | Maps tokens to Tailwind colors and radius. |
 | `next.config.ts` | Rewrites `/api/*` and `/media/*` to `NEXT_PUBLIC_API_BASE` (default `127.0.0.1:8000`). |
-| `components/editor/video-store.ts` | Zustand store: playback, trim ranges, speed ranges. The only source of truth for editor state. |
+| `components/editor/video-store.ts` | Zustand store: playback, trim ranges, speed ranges, effects (zoom/text/blur) and frame style. The only source of truth for editor state. `zoomAt`/`zoomTransform` mirror the export's zoom math. |
 | `components/editor/video-store.test.ts` | Only frontend test file (vitest + jsdom). |
 | `components/editor/video-context.tsx` | `VideoProvider` binds the `<video>` element to the store. `useVideo()` reads it. |
-| `components/editor/stage.tsx` | Video preview, play/mute/volume, timecode, fullscreen. |
+| `components/editor/stage.tsx` | Upload prompt, play/mute/volume, timecode, fullscreen. |
+| `components/editor/preview-canvas.tsx` | The `<video>` inside its frame (background, padding, corners, aspect) with live zoom, text and blur; drag to place text/blur and aim zooms. |
+| `components/editor/effects-panel.tsx` | Sidebar: add zoom/text/blur, edit the selected effect, frame settings. |
+| `components/editor/effects-track.tsx` | Timeline lane for effects: drag to move, edges to resize. |
 | `components/editor/inspector.tsx` | Right sidebar: AI chat, sprite analysis, token estimate, export. All backend `fetch` calls live here. |
 | `components/editor/timeline.tsx` | Timeline: ruler, filmstrip, trim/speed segments, zoom, keyboard shortcuts (`a`, `+`, `-`, `t`, Delete). |
 | `components/editor/toolbar.tsx` | Empty stub. |
