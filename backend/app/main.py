@@ -13,19 +13,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
+from pydantic import TypeAdapter
 
 from .gemini_agent import parse_intent, suggest_cuts_from_sprites
 from .schemas import (
+    BlurEffect,
+    Effect,
     EditRequest,
     EditResponse,
     ExportResponse,
+    FrameStyle,
     SuggestCutsRequest,
     SuggestCutsResponse,
     SpriteAnalysisResponse,
     TokenEstimateRequest,
     TokenEstimateResponse,
+    TextEffect,
     TrimRange,
     UploadResponse,
+    ZoomEffect,
 )
 from .services.media_service import (
     probe_duration_or_cleanup,
@@ -35,6 +41,7 @@ from .services.media_service import (
 from .services.token_service import estimate_tokens
 from .validators import validate_trim
 from .video_tools import (
+    apply_effects,
     apply_speed_multiplier,
     extract_range,
     generate_sprite_sheets,
@@ -451,6 +458,9 @@ async def export_from_file(
     speed_multiplier: Optional[float] = Form(default=None),
     speed_factor: Optional[float] = Form(default=None),
     speed: Optional[str] = Form(default=None),
+    effects: str = Form(default="[]"),
+    frame: str = Form(default="{}"),
+    overlays: list[UploadFile] = File(default=[]),
 ) -> ExportResponse:
     max_mb = int(os.getenv("MAX_FILE_SIZE_MB", "500"))
     try:
@@ -503,6 +513,25 @@ async def export_from_file(
         if only_removed:
             raise HTTPException(status_code=400, detail="Cannot remove the entire video range.")
 
+    try:
+        parsed_effects = TypeAdapter(list[Effect]).validate_json(effects)
+        frame_style = FrameStyle.model_validate_json(frame)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid effects or frame JSON: {exc}") from exc
+    for effect in parsed_effects:
+        validate_trim(min(effect.start, effect.end), max(effect.start, effect.end), duration_sec)
+        if isinstance(effect, TextEffect) and effect.overlay >= len(overlays):
+            raise HTTPException(status_code=400, detail="Text effect points at a missing overlay file.")
+
+    overlay_paths: list[Path] = []
+    for overlay in overlays:
+        data = await overlay.read()
+        if not data.startswith(b"\x89PNG") or len(data) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Overlays must be PNG files under 20 MB.")
+        overlay_path = UPLOAD_DIR / f"{uuid4()}.png"
+        overlay_path.write_bytes(data)
+        overlay_paths.append(overlay_path)
+
     selected_speed = 1.0
     if speed_multiplier is not None:
         selected_speed = float(speed_multiplier)
@@ -520,6 +549,19 @@ async def export_from_file(
 
     try:
         try:
+            if parsed_effects or not frame_style.is_plain():
+                effected_path = apply_effects(
+                    input_path=input_path,
+                    output_dir=UPLOAD_DIR,
+                    zooms=[(e.start, e.end, e.scale, e.cx, e.cy) for e in parsed_effects if isinstance(e, ZoomEffect)],
+                    blurs=[(e.start, e.end, e.x, e.y, e.w, e.h) for e in parsed_effects if isinstance(e, BlurEffect)],
+                    overlays=[
+                        (e.start, e.end, overlay_paths[e.overlay]) for e in parsed_effects if isinstance(e, TextEffect)
+                    ],
+                    frame=None if frame_style.is_plain() else frame_style.model_dump(),
+                )
+                input_path.unlink(missing_ok=True)
+                input_path = effected_path
             speed_segments = _build_speed_segments(
                 duration_sec=duration_sec,
                 trim_ranges=merged_ranges,
@@ -564,6 +606,8 @@ async def export_from_file(
             raise HTTPException(status_code=500, detail=f"Export failed: {exc}") from exc
     finally:
         input_path.unlink(missing_ok=True)
+        for overlay_path in overlay_paths:
+            overlay_path.unlink(missing_ok=True)
 
     return ExportResponse(
         output_url=f"/media/outputs/{output_path.name}",

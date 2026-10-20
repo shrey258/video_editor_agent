@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -123,3 +123,44 @@ class ExportResponse(BaseModel):
     output_url: str
     output_name: str
     removed_ranges_count: int
+
+
+class ZoomEffect(BaseModel):
+    kind: Literal["zoom"]
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    scale: float = Field(ge=1, le=5)
+    cx: float = Field(ge=0, le=1)
+    cy: float = Field(ge=0, le=1)
+
+
+class TextEffect(BaseModel):
+    # The browser renders the text into a full-frame transparent PNG; `overlay` indexes the uploaded files.
+    kind: Literal["text"]
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    overlay: int = Field(ge=0)
+
+
+class BlurEffect(BaseModel):
+    kind: Literal["blur"]
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+    w: float = Field(gt=0, le=1)
+    h: float = Field(gt=0, le=1)
+
+
+Effect = Annotated[Union[ZoomEffect, TextEffect, BlurEffect], Field(discriminator="kind")]
+
+
+class FrameStyle(BaseModel):
+    aspect: Literal["native", "16:9", "9:16", "1:1", "4:3", "4:5"] = "native"
+    colors: list[Annotated[str, Field(pattern=r"^#[0-9a-fA-F]{6}$")]] = Field(default_factory=lambda: ["#000000"], min_length=1, max_length=2)
+    padding: float = Field(default=0, ge=0, le=30)
+    radius: float = Field(default=0, ge=0, le=25)
+    shadow: bool = False
+
+    def is_plain(self) -> bool:
+        return self.aspect == "native" and self.padding == 0 and self.radius == 0 and not self.shadow

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from pathlib import Path
 import math
 from uuid import uuid4
@@ -441,3 +442,151 @@ def generate_sprite_sheets(
         "total_frames": total_frames,
         "sheets": sheets,
     }
+
+
+EFFECTS_FPS = 30
+ASPECTS = {"16:9": (16, 9), "9:16": (9, 16), "1:1": (1, 1), "4:3": (4, 3), "4:5": (4, 5)}
+
+
+def _even(value: float) -> int:
+    return max(2, int(round(value / 2)) * 2)
+
+
+def _zoom_filter(zooms: list[tuple[float, float, float, float, float]], width: int, height: int) -> str:
+    """Eased zoom-in/hold/zoom-out per range, centred on (cx, cy) and clamped to the frame."""
+    z_expr, cx_expr, cy_expr = "1", "0.5", "0.5"
+    for start, end, scale, cx, cy in reversed(sorted(zooms)):
+        ramp = min(0.4, (end - start) / 3)
+        p = f"max(0,min(1,min((it-{start:.3f})/{ramp:.3f},({end:.3f}-it)/{ramp:.3f})))"
+        inside = f"between(it,{start:.3f},{end:.3f})"
+        z_expr = f"if({inside},1+{scale - 1:.4f}*{p}*{p}*(3-2*{p}),{z_expr})"
+        cx_expr = f"if({inside},{cx:.4f},{cx_expr})"
+        cy_expr = f"if({inside},{cy:.4f},{cy_expr})"
+    # Upscaling first keeps zoompan's integer crop offsets from jittering.
+    upscale = "scale=2*iw:2*ih," if width <= 1920 else ""
+    return (
+        f"{upscale}zoompan=z='{z_expr}'"
+        f":x='clip(({cx_expr})*iw-iw/zoom/2,0,iw-iw/zoom)'"
+        f":y='clip(({cy_expr})*ih-ih/zoom/2,0,ih-ih/zoom)'"
+        f":d=1:s={width}x{height}:fps={EFFECTS_FPS}"
+    )
+
+
+def _frame_layout(width: int, height: int, aspect: str, padding: float) -> tuple[int, int, int, int]:
+    """Canvas size and the video's size inside it, keeping the canvas's long side at the source's."""
+    if aspect in ASPECTS:
+        rw, rh = ASPECTS[aspect]
+        long_side = max(width, height)
+        canvas_w, canvas_h = (long_side, long_side * rh / rw) if rw >= rh else (long_side * rw / rh, long_side)
+    else:
+        canvas_w, canvas_h = width, height
+    pad = padding / 100 * min(canvas_w, canvas_h)
+    video_w = canvas_w - 2 * pad
+    video_h = video_w * height / width
+    if video_h > canvas_h - 2 * pad:
+        video_h = canvas_h - 2 * pad
+        video_w = video_h * width / height
+    return _even(canvas_w), _even(canvas_h), _even(video_w), _even(video_h)
+
+
+def _render_frame_assets(
+    work_dir: Path, canvas_w: int, canvas_h: int, video_w: int, video_h: int, colors: list[str], radius: float, shadow: bool
+) -> tuple[Path, Path]:
+    """One-frame PNGs: the rounded-corner alpha mask and the background (with drop shadow baked in)."""
+    r = radius / 100 * min(video_w, video_h)
+    mask = work_dir / "mask.png"
+    rounded = (
+        f"if(lte(pow(max(0,max({r:.2f}-X,X-(W-1-{r:.2f}))),2)"
+        f"+pow(max(0,max({r:.2f}-Y,Y-(H-1-{r:.2f}))),2),{r * r:.2f}),255,0)"
+    )
+    _run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"color=c=black:s={video_w}x{video_h}",
+          "-vf", f"format=gray,geq=lum='{rounded}'", "-frames:v", "1", str(mask)])
+
+    if len(colors) == 2:
+        bg_source = (f"gradients=s={canvas_w}x{canvas_h}:c0={colors[0]}:c1={colors[1]}"
+                     f":x0=0:y0=0:x1={canvas_w}:y1={canvas_h}:n=2:speed=0")
+    else:
+        bg_source = f"color=c={colors[0]}:s={canvas_w}x{canvas_h}"
+    background = work_dir / "background.png"
+    if shadow:
+        margin = _even(0.08 * min(video_w, video_h))
+        x, y = (canvas_w - video_w) // 2 - margin, (canvas_h - video_h) // 2 - margin + margin // 3
+        graph = (
+            f"[1:v]format=gray,pad={video_w + 2 * margin}:{video_h + 2 * margin}:{margin}:{margin}:black,"
+            f"gblur=sigma={margin / 2.5:.1f}[soft];"
+            f"color=c=black:s={video_w + 2 * margin}x{video_h + 2 * margin},format=rgba[ink];"
+            f"[ink][soft]alphamerge,colorchannelmixer=aa=0.6[shade];"
+            f"[0:v][shade]overlay={x}:{y}[out]"
+        )
+        _run(["ffmpeg", "-y", "-f", "lavfi", "-i", bg_source, "-i", str(mask),
+              "-filter_complex", graph, "-map", "[out]", "-frames:v", "1", str(background)])
+    else:
+        _run(["ffmpeg", "-y", "-f", "lavfi", "-i", bg_source, "-frames:v", "1", str(background)])
+    return mask, background
+
+
+def apply_effects(
+    *,
+    input_path: Path,
+    output_dir: Path,
+    zooms: list[tuple[float, float, float, float, float]],
+    blurs: list[tuple[float, float, float, float, float, float]],
+    overlays: list[tuple[float, float, Path]],
+    frame: dict | None,
+) -> Path:
+    """Render zoom, blur, text overlays and the background frame in one pass, all in source time.
+
+    Runs before trim/speed so every effect's timestamps refer to the uploaded video.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{uuid4()}.mp4"
+    width, height = get_image_dimensions(input_path)
+    duration = get_duration_sec(input_path)
+
+    inputs = ["-i", str(input_path)]
+    filters = [f"[0:v]fps={EFFECTS_FPS}[c0]"]
+    current, step = "c0", 0
+
+    def chain(expr: str) -> None:
+        nonlocal current, step
+        step += 1
+        filters.append(expr.replace("{in}", f"[{current}]").replace("{out}", f"[c{step}]"))
+        current = f"c{step}"
+
+    if zooms:
+        chain("{in}" + _zoom_filter(zooms, width, height) + "{out}")
+
+    for i, (start, end, x, y, w, h) in enumerate(blurs):
+        bw, bh = _even(w * width), _even(h * height)
+        bx, by = min(int(x * width), width - bw), min(int(y * height), height - bh)
+        chain(
+            f"{{in}}split[bb{i}][bt{i}];[bt{i}]crop={bw}:{bh}:{bx}:{by},gblur=sigma=24[bl{i}];"
+            f"[bb{i}][bl{i}]overlay={bx}:{by}:enable='between(t,{start:.3f},{end:.3f})'{{out}}"
+        )
+
+    for start, end, png in overlays:
+        idx = len(inputs) // 2
+        inputs += ["-i", str(png)]
+        chain(f"[{idx}:v]scale={width}:{height}[ov{idx}];{{in}}[ov{idx}]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})'{{out}}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        if frame:
+            canvas_w, canvas_h, video_w, video_h = _frame_layout(width, height, frame["aspect"], frame["padding"])
+            mask, background = _render_frame_assets(
+                Path(tmp), canvas_w, canvas_h, video_w, video_h, frame["colors"], frame["radius"], frame["shadow"]
+            )
+            mask_idx, bg_idx = len(inputs) // 2, len(inputs) // 2 + 1
+            loop = ["-loop", "1", "-framerate", str(EFFECTS_FPS)]
+            inputs += loop + ["-i", str(mask)] + loop + ["-i", str(background)]
+            chain(
+                f"{{in}}scale={video_w}:{video_h},format=rgba[fv];[{mask_idx}:v]format=gray[fm];"
+                f"[fv][fm]alphamerge=shortest=1[fa];"
+                f"[{bg_idx}:v][fa]overlay={(canvas_w - video_w) // 2}:{(canvas_h - video_h) // 2}:shortest=1{{out}}"
+            )
+        chain("{in}format=yuv420p{out}")
+
+        _run(
+            ["ffmpeg", "-y", *inputs, "-filter_complex", ";".join(filters), "-map", f"[{current}]", "-map", "0:a?",
+             "-t", f"{duration:.3f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "aac", str(output_path)]
+        )
+    return output_path

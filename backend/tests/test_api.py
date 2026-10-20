@@ -309,3 +309,58 @@ def test_edit_request_applies_speed_range(monkeypatch, tmp_path):
     assert data["action"] == "speed_video"
     assert data["operation"] == "apply_speed_range"
     assert captured["segments"] == [(0.0, 1.0, 1.0), (1.0, 3.0, 2.0), (3.0, 8.0, 1.0)]
+
+
+def test_export_from_file_applies_effects_before_trim(monkeypatch, tmp_path):
+    import app.main as main
+
+    source_file = tmp_path / "source.mp4"
+    source_file.write_bytes(b"dummy")
+    effected_file = tmp_path / "effected.mp4"
+    effected_file.write_bytes(b"effected")
+    rendered_file = tmp_path / "rendered.mp4"
+    rendered_file.write_bytes(b"rendered")
+
+    async def fake_save_upload_file(*, file, upload_dir, max_file_size_mb=None):
+        return source_file
+
+    captured = {}
+
+    def fake_apply_effects(**kwargs):
+        captured["effects"] = kwargs
+        return effected_file
+
+    def fake_stitch(**kwargs):
+        captured["stitch_input"] = kwargs["input_path"]
+        return rendered_file
+
+    monkeypatch.setattr(main, "save_upload_file", fake_save_upload_file)
+    monkeypatch.setattr(main, "probe_duration_or_cleanup", lambda _: 8.0)
+    monkeypatch.setattr(main, "get_duration_sec", lambda _: 7.0)
+    monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(main, "apply_effects", fake_apply_effects)
+    monkeypatch.setattr(main, "remove_segments_and_stitch", fake_stitch)
+
+    response = client.post(
+        "/export/from-file",
+        data={
+            "trim_ranges": '[{"start":6.0,"end":7.0}]',
+            "effects": '[{"kind":"zoom","start":1,"end":3,"scale":2,"cx":0.25,"cy":0.75},'
+            '{"kind":"blur","start":0,"end":2,"x":0.1,"y":0.1,"w":0.2,"h":0.2},'
+            '{"kind":"text","start":4,"end":5,"overlay":0}]',
+            "frame": '{"aspect":"9:16","colors":["#112233"],"padding":5}',
+        },
+        files=[
+            ("file", ("sample.mp4", b"dummy", "video/mp4")),
+            ("overlays", ("text.png", b"\x89PNG fake", "image/png")),
+        ],
+    )
+    assert response.status_code == 200
+    fx = captured["effects"]
+    assert fx["zooms"] == [(1.0, 3.0, 2.0, 0.25, 0.75)]
+    assert fx["blurs"] == [(0.0, 2.0, 0.1, 0.1, 0.2, 0.2)]
+    assert [(start, end) for start, end, _ in fx["overlays"]] == [(4.0, 5.0)]
+    assert fx["frame"]["aspect"] == "9:16"
+    # Trim runs on the effected file, and the overlay temp file is cleaned up.
+    assert captured["stitch_input"] == effected_file
+    assert not list(tmp_path.glob("*.png"))
